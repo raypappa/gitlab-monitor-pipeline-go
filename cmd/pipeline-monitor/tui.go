@@ -211,6 +211,8 @@ func (m monitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case "down", "j":
 				m.tracePos++
+			case "f":
+				m.tracePos = len(strings.Split(strings.TrimSuffix(m.trace, "\n"), "\n"))
 			}
 			return m, nil
 		}
@@ -335,7 +337,7 @@ func (m monitorModel) traceText() string {
 	for len(result) < m.height-1 {
 		result = append(result, "")
 	}
-	result = append(result, truncate("esc: back  j/k: scroll  q: quit", m.width))
+	result = append(result, truncate("esc: back  j/k: scroll  f: follow  q: quit", m.width))
 	return strings.Join(result, "\n")
 }
 

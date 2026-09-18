@@ -135,6 +135,21 @@ func TestMonitorModelTraceViewIsBounded(t *testing.T) {
 	}
 }
 
+func TestMonitorModelTraceFollowMovesToBottom(t *testing.T) {
+	m := newMonitorModel(nil)
+	m.width, m.height, m.view = 20, 5, "trace"
+	m.trace = "one\ntwo\nthree\nfour\nfive\nsix"
+	m.tracePos = 0
+	updated, _ := m.Update(tea.KeyPressMsg{Text: "f"})
+	got := updated.(monitorModel)
+	if got.tracePos != 6 {
+		t.Fatalf("trace position after f = %d, want 6", got.tracePos)
+	}
+	if !strings.Contains(got.traceText(), "six") {
+		t.Fatalf("follow view does not show final trace line: %q", got.traceText())
+	}
+}
+
 func TestSelectRenderMode(t *testing.T) {
 	tests := []struct {
 		name     string
