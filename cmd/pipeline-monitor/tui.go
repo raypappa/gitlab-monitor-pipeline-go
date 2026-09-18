@@ -97,7 +97,7 @@ func newMonitorModel(state *monitoredPipeline) monitorModel {
 	if state != nil {
 		expanded[pipelineKey(state.Pipeline)] = true
 	}
-	m := monitorModel{state: state, expanded: expanded, status: "j/k or arrows: move  enter: expand  l: logs  s: save  r: retry  q: quit"}
+	m := monitorModel{state: state, expanded: expanded, status: "j/k or arrows: move  G: bottom  enter: expand  l: logs  s: save  r: retry  q: quit"}
 	m.rebuildRows("")
 	return m
 }
@@ -223,7 +223,7 @@ func (m monitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.moveSelection(1)
 		case "home":
 			m.selected = 0
-		case "end":
+		case "end", "G":
 			if len(m.rows) > 0 {
 				m.selected = len(m.rows) - 1
 			}

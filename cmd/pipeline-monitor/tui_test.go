@@ -27,6 +27,11 @@ func TestMonitorModelNavigationIsBounded(t *testing.T) {
 	if m.selected != len(m.rows)-1 {
 		t.Fatalf("selected after down at end = %d, want %d", m.selected, len(m.rows)-1)
 	}
+	m.selected = 0
+	m, _ = updateMonitor(t, m, tea.KeyPressMsg{Text: "G"})
+	if m.selected != len(m.rows)-1 {
+		t.Fatalf("selected after G = %d, want %d", m.selected, len(m.rows)-1)
+	}
 }
 
 func TestMonitorModelViewIsBounded(t *testing.T) {
