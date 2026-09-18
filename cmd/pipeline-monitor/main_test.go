@@ -65,6 +65,25 @@ func TestSnapshotIncludesDownstreamPipeline(t *testing.T) {
 	}
 }
 
+func TestShouldOfferJobLogs(t *testing.T) {
+	tests := map[string]struct {
+		opts options
+		want bool
+	}{
+		"text output": {opts: options{output: "text"}, want: true},
+		"wait":        {opts: options{output: "text", wait: true}, want: false},
+		"compact":     {opts: options{output: "text", compact: true}, want: false},
+		"json":        {opts: options{output: "json"}, want: false},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			if got := shouldOfferJobLogs(test.opts); got != test.want {
+				t.Fatalf("shouldOfferJobLogs() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestSnapshotRefreshesRootPipeline(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

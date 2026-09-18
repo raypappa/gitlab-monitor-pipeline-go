@@ -48,7 +48,7 @@ Use `--help` to view the command's available flags.
 
 `--wait` enables live polling until all pipelines finish. `--live` refreshes status using the configured polling interval, which defaults to three seconds. `--compact` prints a condensed status view. `--output json` prints one snapshot and cannot be combined with `--live`, `--wait`, or `--compact`.
 
-When a text-mode pipeline finishes, the application can offer actions to view or save a selected job trace, retry a selected job, or exit. Saved traces use restrictive file permissions. Compact mode and JSON output skip this interactive menu.
+When a text-mode pipeline finishes, the application can offer actions to view or save a selected job trace, retry a selected job, or exit. Saved traces use restrictive file permissions. Wait, compact, and JSON modes skip this interactive menu.
 
 ## Authentication and Configuration
 

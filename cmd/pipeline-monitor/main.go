@@ -214,7 +214,7 @@ func run(ctx context.Context, opts options) error {
 		fmt.Print("\033[H\033[2J")
 		printPipeline(state, "", opts.compact)
 		if !opts.live || !hasPollable(state) {
-			if !opts.compact && opts.output == "text" {
+			if shouldOfferJobLogs(opts) {
 				retried, err := offerJobLogs(ctx, c, state)
 				if err != nil {
 					return err
@@ -235,6 +235,10 @@ func run(ctx context.Context, opts options) error {
 		case <-time.After(opts.interval):
 		}
 	}
+}
+
+func shouldOfferJobLogs(opts options) bool {
+	return opts.output == "text" && !opts.compact && !opts.wait
 }
 
 func (c *client) jobTrace(ctx context.Context, projectID, jobID int64) (string, error) {
