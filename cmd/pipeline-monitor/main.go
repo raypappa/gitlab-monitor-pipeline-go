@@ -211,6 +211,16 @@ func run(ctx context.Context, opts options) error {
 			}
 			return nil
 		}
+		if !opts.live && interactiveTerminal() {
+			finalModel, err := runMonitorTUI(state)
+			if err != nil {
+				return err
+			}
+			if finalModel.state != nil && (finalModel.state.Pipeline.Status == "failed" || hasFailed(finalModel.state)) {
+				return errors.New("pipeline failed")
+			}
+			return nil
+		}
 		fmt.Print("\033[H\033[2J")
 		printPipeline(state, "", opts.compact)
 		if !opts.live || !hasPollable(state) {
@@ -235,6 +245,11 @@ func run(ctx context.Context, opts options) error {
 		case <-time.After(opts.interval):
 		}
 	}
+}
+
+func interactiveTerminal() bool {
+	info, err := os.Stdout.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
 func shouldOfferJobLogs(opts options) bool {
