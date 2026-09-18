@@ -113,11 +113,34 @@ type options struct {
 	project    string
 	live       bool
 	compact    bool
+	noTUI      bool
 	wait       bool
 	include    bool
 	output     string
 	interval   time.Duration
 	baseURL    string
+}
+
+type renderMode int
+
+const (
+	jsonMode renderMode = iota
+	compactMode
+	plainMode
+	tuiMode
+)
+
+func selectRenderMode(opts options, terminal bool) renderMode {
+	if opts.output == "json" {
+		return jsonMode
+	}
+	if opts.compact {
+		return compactMode
+	}
+	if opts.noTUI || !terminal {
+		return plainMode
+	}
+	return tuiMode
 }
 
 func main() {
@@ -142,6 +165,7 @@ func newCommand() *cobra.Command {
 	flags.StringVar(&opts.project, "project", "", "GitLab project path or numeric ID; defaults to CI_PROJECT_PATH or git remote")
 	flags.BoolVar(&opts.live, "live", false, "Refresh status in real time until all pipelines finish")
 	flags.BoolVar(&opts.compact, "compact", false, "Show status in compact format")
+	flags.BoolVar(&opts.noTUI, "no-tui", false, "Disable the interactive terminal UI and use plain text")
 	flags.BoolVar(&opts.wait, "wait", false, "Wait until all pipelines finish")
 	flags.BoolVar(&opts.include, "downstream", true, "Include downstream child pipelines")
 	flags.StringVar(&opts.output, "output", "text", "Output format: text or json")
@@ -211,7 +235,7 @@ func run(ctx context.Context, opts options) error {
 			}
 			return nil
 		}
-		if !opts.live && interactiveTerminal() {
+		if selectRenderMode(opts, interactiveTerminal()) == tuiMode && !opts.live {
 			finalModel, err := runMonitorTUI(state)
 			if err != nil {
 				return err

@@ -129,7 +129,7 @@ func (m monitorModel) viewText() string {
 	}
 	start := m.visibleStart(rowLimit)
 	for i := start; i < start+rowLimit; i++ {
-		lines = append(lines, truncate(m.renderRow(i), m.width))
+		lines = append(lines, truncate(m.renderLine(i), m.width))
 	}
 	for len(lines) < m.height-1 {
 		lines = append(lines, "")
@@ -140,6 +140,40 @@ func (m monitorModel) viewText() string {
 	}
 	lines = append(lines, truncate(footer, m.width))
 	return strings.Join(lines, "\n")
+}
+
+func (m monitorModel) renderLine(index int) string {
+	if m.width >= 90 {
+		leftWidth := m.width * 3 / 5
+		left := truncate(m.renderRow(index), leftWidth)
+		right := truncate(m.detailsText(), m.width-leftWidth-1)
+		return left + strings.Repeat(" ", maxInt(1, leftWidth-lipgloss.Width(left))) + " " + right
+	}
+	return m.renderRow(index)
+}
+
+func (m monitorModel) detailsText() string {
+	if len(m.rows) == 0 {
+		return "No pipeline data"
+	}
+	row := m.rows[m.selected]
+	if row.kind == pipelineRow {
+		p := row.pipeline.Pipeline
+		name := p.Name
+		if name == "" {
+			name = fmt.Sprintf("pipeline %d", p.ID)
+		}
+		return fmt.Sprintf("%s | id %d | project %d | %s | jobs %d | children %d", name, p.ID, p.ProjectID, p.Status, len(row.pipeline.Jobs), len(row.pipeline.Children))
+	}
+	j := row.job.job
+	return fmt.Sprintf("%s | id %d | project %d | %s | stage %s | %s", j.Name, j.ID, row.job.projectID, j.Status, j.Stage, row.pipeline.Pipeline.WebURL)
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func (m monitorModel) visibleStart(rowLimit int) int {

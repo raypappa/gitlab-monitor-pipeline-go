@@ -60,6 +60,47 @@ func TestMonitorModelQuit(t *testing.T) {
 	}
 }
 
+func TestMonitorModelExpansion(t *testing.T) {
+	m := newMonitorModel(&monitoredPipeline{
+		Pipeline: pipeline{ID: 1, ProjectID: 10},
+		Children: []*monitoredPipeline{{Pipeline: pipeline{ID: 2, ProjectID: 20}, Jobs: []job{{ID: 3}}}},
+	})
+	if len(m.rows) != 2 {
+		t.Fatalf("initial rows = %d, want root and child", len(m.rows))
+	}
+	m.selected = 1
+	m, _ = updateMonitor(t, m, tea.KeyPressMsg{Text: "enter"})
+	if len(m.rows) != 3 || !m.rows[1].expanded {
+		t.Fatalf("expanded child rows = %#v", m.rows)
+	}
+	m, _ = updateMonitor(t, m, tea.KeyPressMsg{Text: "enter"})
+	if len(m.rows) != 2 || m.selected != 1 || m.rows[1].expanded {
+		t.Fatalf("collapsed child rows = %#v, selected %d", m.rows, m.selected)
+	}
+}
+
+func TestSelectRenderMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		opts     options
+		terminal bool
+		want     renderMode
+	}{
+		{name: "json wins", opts: options{output: "json", compact: true}, terminal: true, want: jsonMode},
+		{name: "compact wins", opts: options{output: "text", compact: true}, terminal: true, want: compactMode},
+		{name: "no tui", opts: options{output: "text", noTUI: true}, terminal: true, want: plainMode},
+		{name: "redirected", opts: options{output: "text"}, terminal: false, want: plainMode},
+		{name: "interactive", opts: options{output: "text"}, terminal: true, want: tuiMode},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := selectRenderMode(test.opts, test.terminal); got != test.want {
+				t.Fatalf("selectRenderMode() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func updateMonitor(t *testing.T, m monitorModel, msg tea.Msg) (monitorModel, tea.Cmd) {
 	t.Helper()
 	updated, cmd := m.Update(msg)
