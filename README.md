@@ -1,14 +1,15 @@
 # GitLab Pipeline Monitor
 
-GitLab Pipeline Monitor is a Go command-line application for inspecting a GitLab pipeline and its downstream child pipelines. It can monitor the latest pipeline for a branch or a specific pipeline ID, poll running pipelines, print a JSON snapshot, retrieve job traces, and retry jobs from its interactive text interface.
+GitLab Pipeline Monitor is a Go command-line application for inspecting a GitLab pipeline and its downstream child pipelines. It can monitor the latest pipeline for a branch or a specific pipeline ID, poll running pipelines, print a JSON snapshot, retrieve job traces, and retry jobs from its bounded terminal interface.
 
 ## Features
 
 - Monitor a branch's latest pipeline or target a pipeline by ID.
 - Recursively include downstream child pipelines, including pipelines in other projects.
-- Display text, compact, live, wait, or JSON output.
+- Display a bounded interactive TUI in terminals, or plain text, compact, live, wait, or JSON output elsewhere.
 - Return a non-zero status when a pipeline or required job fails.
-- View or save job traces and retry selected root or downstream jobs from the text-mode menu.
+- Expand and collapse child pipelines while navigating a scrollable pipeline/job tree.
+- View selected pipeline or job details, job traces, save traces, and retry root or downstream jobs.
 
 ## Getting the Code
 
@@ -40,15 +41,22 @@ The executable is named `pipeline-monitor`. A minimal set of useful invocations 
 ```bash
 pipeline-monitor --pipeline-id 12345 --live --compact
 pipeline-monitor --pipeline-id 12345 --live --compact --downstream=false
-pipeline-monitor --branch main --live
+pipeline-monitor --pipeline-id 12345 --live
+pipeline-monitor --pipeline-id 12345 --live --no-tui
 pipeline-monitor --pipeline-id 12345 --output json
 ```
 
 Use `--help` to view the command's available flags.
 
-`--wait` enables live polling until all pipelines finish. `--live` refreshes status using the configured polling interval, which defaults to three seconds. `--compact` prints a condensed status view. `--output json` prints one snapshot and cannot be combined with `--live`, `--wait`, or `--compact`.
+Interactive terminals use a full-screen Bubble Tea interface with a bounded viewport, so large job lists and deeply nested downstream pipelines do not continuously print lines. The root pipeline is expanded initially; child pipelines can be expanded or collapsed independently. Wide terminals show a details pane beside the tree, while narrow terminals prioritize the tree.
 
-When a text-mode pipeline finishes, the application can offer actions to view or save a selected job trace, retry a selected job, or exit. Saved traces use restrictive file permissions. Wait, compact, and JSON modes skip this interactive menu.
+Use `up`/`down` or `j`/`k` to move, `home` and `end` to jump, `enter` to toggle a pipeline, `l` to view a selected job trace, `s` to save it as `job-<id>.txt`, `r` to retry it, and `q` or `ctrl+c` to quit. Trace viewing is bounded and scrollable with `j`/`k`; `esc` returns to the tree. Pipeline and job details include the owning project, IDs, status, duration-related metadata, and web URL where available.
+
+`--wait` enables live polling until all pipelines finish. `--live` refreshes status using the configured polling interval, which defaults to three seconds. In the TUI, API refreshes run as Bubble Tea commands so keyboard input remains responsive. `--no-tui` forces the existing plain-text renderer even when stdout is a terminal. Redirected stdout and CI always use plain text without terminal control sequences.
+
+`--compact` prints a condensed non-interactive status view. `--output json` prints one snapshot and cannot be combined with `--live`, `--wait`, or `--compact`. Downstream traversal remains enabled by default and can be disabled with `--downstream=false`.
+
+For example, a pipeline with dozens of jobs and several nested child pipelines initially shows the root jobs and direct child pipeline rows. Select a child and press `enter` to inspect its jobs; collapse it again to return to the compact tree without losing descendant expansion state.
 
 ## Authentication and Configuration
 
@@ -119,7 +127,7 @@ The configured hooks format staged Go files with `gofmt`, then run `go vet ./...
 - `project is required`: provide `--project`, set `CI_PROJECT_PATH`, or run from a checkout with an `origin` remote that identifies the GitLab project.
 - `--output json cannot be used with --live, --wait, or --compact`: use JSON for a single snapshot, or use text output for polling and compact display.
 - GitLab API permission errors: ensure the token can read the root and every downstream project, including pipelines, jobs, and bridges. Cross-project downstream traversal requires access to those projects.
-- The interactive menu does not appear: text mode must be non-compact and the pipeline must have traceable jobs. Use `--compact` or `--output json` intentionally when non-interactive output is required.
+- The TUI does not appear: it is selected only for interactive stdout and is disabled by `--no-tui`, `--compact`, and `--output json`. Use `--no-tui` for deterministic plain text in a terminal.
 
 ## Contributing
 
