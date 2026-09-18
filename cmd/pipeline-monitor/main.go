@@ -252,7 +252,7 @@ func run(ctx context.Context, opts options) error {
 		fmt.Print("\033[H\033[2J")
 		printPipeline(state, "", opts.compact)
 		if !opts.live || !hasPollable(state) {
-			if shouldOfferJobLogs(opts) {
+			if shouldOfferJobLogs(opts) && interactiveTerminal() && !opts.noTUI {
 				retried, err := offerJobLogs(ctx, c, state)
 				if err != nil {
 					return err

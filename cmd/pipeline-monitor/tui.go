@@ -25,6 +25,9 @@ type monitorModel struct {
 	interval time.Duration
 	loading  bool
 	ctx      context.Context
+	view     string
+	trace    string
+	tracePos int
 }
 
 type snapshotMsg struct {
@@ -36,6 +39,44 @@ type snapshotErrMsg struct {
 }
 
 type refreshTickMsg struct{}
+
+type traceMsg struct {
+	trace string
+	job   *traceableJob
+	save  bool
+}
+
+type traceErrMsg struct {
+	err error
+}
+
+type retryMsg struct {
+	job job
+}
+
+type retryErrMsg struct {
+	err error
+}
+
+func fetchTrace(ctx context.Context, c *client, traced *traceableJob, save bool) tea.Cmd {
+	return func() tea.Msg {
+		trace, err := c.jobTrace(ctx, traced.projectID, traced.job.ID)
+		if err != nil {
+			return traceErrMsg{err: err}
+		}
+		return traceMsg{trace: trace, job: traced, save: save}
+	}
+}
+
+func retrySelected(ctx context.Context, c *client, traced *traceableJob) tea.Cmd {
+	return func() tea.Msg {
+		retried, err := c.retryJob(ctx, traced.projectID, traced.job.ID)
+		if err != nil {
+			return retryErrMsg{err: err}
+		}
+		return retryMsg{job: retried}
+	}
+}
 
 func refreshSnapshot(ctx context.Context, c *client, root pipeline, include bool) tea.Cmd {
 	return func() tea.Msg {
@@ -127,11 +168,52 @@ func (m monitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, scheduleRefresh(m.interval)
 		}
 		return m, nil
+	case traceMsg:
+		m.err = nil
+		if msg.save {
+			path := fmt.Sprintf("job-%d.txt", msg.job.job.ID)
+			if err := saveJobTrace(path, msg.trace); err != nil {
+				m.err = err
+				return m, nil
+			}
+			m.status = "saved logs to " + path
+			return m, nil
+		}
+		m.view = "trace"
+		m.trace = msg.trace
+		m.tracePos = 0
+		return m, nil
+	case traceErrMsg:
+		m.err = msg.err
+		return m, nil
+	case retryMsg:
+		m.status = fmt.Sprintf("retried job %d (%s)", msg.job.ID, msg.job.Status)
+		if m.client != nil {
+			m.loading = true
+			return m, refreshSnapshot(m.ctx, m.client, m.root, m.include)
+		}
+		return m, nil
+	case retryErrMsg:
+		m.err = msg.err
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 		return m, nil
 	case tea.KeyPressMsg:
+		if m.view == "trace" {
+			switch msg.String() {
+			case "q", "esc", "ctrl+c":
+				m.view = ""
+			case "up", "k":
+				if m.tracePos > 0 {
+					m.tracePos--
+				}
+			case "down", "j":
+				m.tracePos++
+			}
+			return m, nil
+		}
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
@@ -147,6 +229,13 @@ func (m monitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "enter":
 			m.toggleSelected()
+		case "l", "s", "r":
+			if traced := m.selectedJob(); traced != nil && m.client != nil {
+				if msg.String() == "r" {
+					return m, retrySelected(m.ctx, m.client, traced)
+				}
+				return m, fetchTrace(m.ctx, m.client, traced, msg.String() == "s")
+			}
 		}
 	}
 	return m, nil
@@ -191,6 +280,9 @@ func (m monitorModel) viewText() string {
 	if m.width <= 0 || m.height <= 0 {
 		return ""
 	}
+	if m.view == "trace" {
+		return m.traceText()
+	}
 	lines := make([]string, 0, m.height)
 	lines = append(lines, truncate("Pipeline Monitor", m.width))
 	available := m.height - 2
@@ -214,6 +306,44 @@ func (m monitorModel) viewText() string {
 	}
 	lines = append(lines, truncate(footer, m.width))
 	return strings.Join(lines, "\n")
+}
+
+func (m monitorModel) traceText() string {
+	lines := strings.Split(m.trace, "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	available := m.height - 2
+	if available < 0 {
+		available = 0
+	}
+	start := m.tracePos
+	maxStart := len(lines) - available
+	if maxStart < 0 {
+		maxStart = 0
+	}
+	if start > maxStart {
+		start = maxStart
+	}
+	if start < 0 {
+		start = 0
+	}
+	result := []string{truncate("Job trace", m.width)}
+	for i := start; i < start+available && i < len(lines); i++ {
+		result = append(result, truncate(lines[i], m.width))
+	}
+	for len(result) < m.height-1 {
+		result = append(result, "")
+	}
+	result = append(result, truncate("esc: back  j/k: scroll  q: quit", m.width))
+	return strings.Join(result, "\n")
+}
+
+func (m monitorModel) selectedJob() *traceableJob {
+	if len(m.rows) == 0 || m.selected < 0 || m.selected >= len(m.rows) || m.rows[m.selected].kind != jobRow {
+		return nil
+	}
+	return m.rows[m.selected].job
 }
 
 func (m monitorModel) renderLine(index int) string {

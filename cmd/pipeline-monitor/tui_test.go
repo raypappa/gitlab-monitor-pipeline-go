@@ -109,6 +109,27 @@ func TestMonitorModelRefreshPrunesExpansion(t *testing.T) {
 	}
 }
 
+func TestMonitorModelSelectedDownstreamJobUsesOwningProject(t *testing.T) {
+	state := &monitoredPipeline{Pipeline: pipeline{ID: 1, ProjectID: 10}, Children: []*monitoredPipeline{{Pipeline: pipeline{ID: 2, ProjectID: 20}, Jobs: []job{{ID: 3}}}}}
+	m := newMonitorModel(state)
+	m.expanded["20/2"] = true
+	m.rebuildRows("")
+	m.selected = 2
+	traced := m.selectedJob()
+	if traced == nil || traced.projectID != 20 || traced.job.ID != 3 {
+		t.Fatalf("selected job = %#v", traced)
+	}
+}
+
+func TestMonitorModelTraceViewIsBounded(t *testing.T) {
+	m := newMonitorModel(nil)
+	m.width, m.height, m.view = 20, 5, "trace"
+	m.trace = strings.Repeat("long trace line\n", 20)
+	if got := lipgloss.Height(m.viewText()); got > m.height {
+		t.Fatalf("trace height = %d, want <= %d", got, m.height)
+	}
+}
+
 func TestSelectRenderMode(t *testing.T) {
 	tests := []struct {
 		name     string
