@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -17,6 +19,36 @@ type monitorModel struct {
 	height   int
 	status   string
 	err      error
+	client   *client
+	root     pipeline
+	include  bool
+	interval time.Duration
+	loading  bool
+	ctx      context.Context
+}
+
+type snapshotMsg struct {
+	state *monitoredPipeline
+}
+
+type snapshotErrMsg struct {
+	err error
+}
+
+type refreshTickMsg struct{}
+
+func refreshSnapshot(ctx context.Context, c *client, root pipeline, include bool) tea.Cmd {
+	return func() tea.Msg {
+		state, err := c.snapshot(ctx, root, include, map[string]bool{})
+		if err != nil {
+			return snapshotErrMsg{err: err}
+		}
+		return snapshotMsg{state: state}
+	}
+}
+
+func scheduleRefresh(interval time.Duration) tea.Cmd {
+	return tea.Tick(interval, func(time.Time) tea.Msg { return refreshTickMsg{} })
 }
 
 func newMonitorModel(state *monitoredPipeline) monitorModel {
@@ -58,10 +90,43 @@ func rowKey(row treeRow) string {
 	return fmt.Sprintf("job:%d/%d", row.job.projectID, row.job.job.ID)
 }
 
-func (m monitorModel) Init() tea.Cmd { return nil }
+func (m monitorModel) Init() tea.Cmd {
+	if m.client == nil || m.interval <= 0 || m.state == nil || !hasPollable(m.state) {
+		return nil
+	}
+	m.loading = true
+	return refreshSnapshot(m.ctx, m.client, m.root, m.include)
+}
 
 func (m monitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case refreshTickMsg:
+		if m.client == nil || m.loading || !hasPollable(m.state) {
+			return m, nil
+		}
+		m.loading = true
+		return m, refreshSnapshot(m.ctx, m.client, m.root, m.include)
+	case snapshotMsg:
+		selectedKey := ""
+		if len(m.rows) > 0 && m.selected < len(m.rows) {
+			selectedKey = rowKey(m.rows[m.selected])
+		}
+		m.state = msg.state
+		m.loading = false
+		m.err = nil
+		m.pruneExpansion()
+		m.rebuildRows(selectedKey)
+		if m.client != nil && hasPollable(m.state) {
+			return m, scheduleRefresh(m.interval)
+		}
+		return m, nil
+	case snapshotErrMsg:
+		m.loading = false
+		m.err = msg.err
+		if m.client != nil && m.interval > 0 {
+			return m, scheduleRefresh(m.interval)
+		}
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -85,6 +150,15 @@ func (m monitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func (m *monitorModel) pruneExpansion() {
+	keys := allPipelineKeys(m.state)
+	for key := range m.expanded {
+		if !keys[key] {
+			delete(m.expanded, key)
+		}
+	}
 }
 
 func (m *monitorModel) moveSelection(delta int) {
@@ -222,8 +296,14 @@ func truncate(value string, width int) string {
 	return string(runes[:width-1]) + "…"
 }
 
-func runMonitorTUI(state *monitoredPipeline) (monitorModel, error) {
-	finalModel, err := tea.NewProgram(newMonitorModel(state)).Run()
+func runMonitorTUI(ctx context.Context, c *client, root pipeline, state *monitoredPipeline, include bool, interval time.Duration) (monitorModel, error) {
+	model := newMonitorModel(state)
+	model.client = c
+	model.root = root
+	model.include = include
+	model.interval = interval
+	model.ctx = ctx
+	finalModel, err := tea.NewProgram(model).Run()
 	if err != nil {
 		return monitorModel{}, err
 	}

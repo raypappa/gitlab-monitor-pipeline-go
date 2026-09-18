@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -76,6 +77,35 @@ func TestMonitorModelExpansion(t *testing.T) {
 	m, _ = updateMonitor(t, m, tea.KeyPressMsg{Text: "enter"})
 	if len(m.rows) != 2 || m.selected != 1 || m.rows[1].expanded {
 		t.Fatalf("collapsed child rows = %#v, selected %d", m.rows, m.selected)
+	}
+}
+
+func TestMonitorModelRefreshSuccessPreservesSelection(t *testing.T) {
+	m := newMonitorModel(&monitoredPipeline{Pipeline: pipeline{ID: 1, ProjectID: 10}, Jobs: []job{{ID: 2, Name: "old"}}})
+	m.selected = 1
+	updated, _ := m.Update(snapshotMsg{state: &monitoredPipeline{Pipeline: pipeline{ID: 1, ProjectID: 10}, Jobs: []job{{ID: 2, Name: "new"}}}})
+	got := updated.(monitorModel)
+	if got.selected != 1 || got.rows[1].job.job.Name != "new" || got.err != nil {
+		t.Fatalf("refreshed model = %#v", got)
+	}
+}
+
+func TestMonitorModelRefreshErrorPreservesSnapshot(t *testing.T) {
+	state := &monitoredPipeline{Pipeline: pipeline{ID: 1, ProjectID: 10}}
+	m := newMonitorModel(state)
+	updated, _ := m.Update(snapshotErrMsg{err: context.Canceled})
+	got := updated.(monitorModel)
+	if got.state != state || got.err != context.Canceled {
+		t.Fatalf("error model = %#v", got)
+	}
+}
+
+func TestMonitorModelRefreshPrunesExpansion(t *testing.T) {
+	m := newMonitorModel(&monitoredPipeline{Pipeline: pipeline{ID: 1, ProjectID: 10}})
+	m.expanded["20/2"] = true
+	updated, _ := m.Update(snapshotMsg{state: &monitoredPipeline{Pipeline: pipeline{ID: 1, ProjectID: 10}}})
+	if updated.(monitorModel).expanded["20/2"] {
+		t.Fatal("removed pipeline expansion was retained")
 	}
 }
 

@@ -235,8 +235,12 @@ func run(ctx context.Context, opts options) error {
 			}
 			return nil
 		}
-		if selectRenderMode(opts, interactiveTerminal()) == tuiMode && !opts.live {
-			finalModel, err := runMonitorTUI(state)
+		if selectRenderMode(opts, interactiveTerminal()) == tuiMode {
+			interval := time.Duration(0)
+			if opts.live {
+				interval = opts.interval
+			}
+			finalModel, err := runMonitorTUI(ctx, c, root, state, opts.include, interval)
 			if err != nil {
 				return err
 			}
