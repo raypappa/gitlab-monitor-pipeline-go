@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euxo pipefail
+
+cp build/pipeline-monitor $HOME/.local/bin/pipeline-monitor
