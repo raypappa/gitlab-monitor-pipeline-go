@@ -97,7 +97,7 @@ func newMonitorModel(state *monitoredPipeline) monitorModel {
 	if state != nil {
 		expanded[pipelineKey(state.Pipeline)] = true
 	}
-	m := monitorModel{state: state, expanded: expanded, status: "j/k or arrows: move  enter: expand  q: quit"}
+	m := monitorModel{state: state, expanded: expanded, status: "j/k or arrows: move  enter: expand  l: logs  s: save  r: retry  q: quit"}
 	m.rebuildRows("")
 	return m
 }
