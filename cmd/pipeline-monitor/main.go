@@ -178,6 +178,9 @@ func run(ctx context.Context, opts options) error {
 	if opts.wait {
 		opts.live = true
 	}
+	if err := validateOptions(opts); err != nil {
+		return err
+	}
 	if opts.output != "text" && opts.output != "json" {
 		return errors.New("--output must be text or json")
 	}
@@ -240,7 +243,7 @@ func run(ctx context.Context, opts options) error {
 			if opts.live {
 				interval = opts.interval
 			}
-			finalModel, err := runMonitorTUI(ctx, c, root, state, opts.include, interval)
+			finalModel, err := runMonitorTUI(ctx, c, root, state, opts.include, interval, opts.wait)
 			if err != nil {
 				return err
 			}
@@ -273,6 +276,13 @@ func run(ctx context.Context, opts options) error {
 		case <-time.After(opts.interval):
 		}
 	}
+}
+
+func validateOptions(opts options) error {
+	if (opts.live || opts.wait) && opts.interval <= 0 {
+		return errors.New("--interval must be greater than zero when --live or --wait is enabled")
+	}
+	return nil
 }
 
 func interactiveTerminal() bool {

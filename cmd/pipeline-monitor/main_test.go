@@ -178,6 +178,43 @@ func TestShouldOfferJobLogs(t *testing.T) {
 	}
 }
 
+func TestValidateOptions(t *testing.T) {
+	tests := []struct {
+		name    string
+		opts    options
+		wantErr string
+	}{
+		{name: "live zero", opts: options{live: true}, wantErr: "--interval must be greater than zero"},
+		{name: "live negative", opts: options{live: true, interval: -time.Second}, wantErr: "--interval must be greater than zero"},
+		{name: "wait zero", opts: options{wait: true}, wantErr: "--interval must be greater than zero"},
+		{name: "non live zero", opts: options{}, wantErr: ""},
+		{name: "positive", opts: options{live: true, interval: time.Second}, wantErr: ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateOptions(test.opts)
+			if test.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateOptions() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("validateOptions() error = %v, want substring %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestCommandValidationRejectsPollingIntervalBeforeAPISetup(t *testing.T) {
+	cmd := newCommand()
+	cmd.SetArgs([]string{"--project", "group/project", "--live", "--interval", "0s"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--interval must be greater than zero") {
+		t.Fatalf("command error = %v, want interval validation error", err)
+	}
+}
+
 func TestSnapshotRefreshesRootPipeline(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

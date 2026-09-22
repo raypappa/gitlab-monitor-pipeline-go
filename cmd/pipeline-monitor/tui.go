@@ -23,6 +23,7 @@ type monitorModel struct {
 	root     pipeline
 	include  bool
 	interval time.Duration
+	wait     bool
 	loading  bool
 	ctx      context.Context
 	view     string
@@ -132,6 +133,9 @@ func rowKey(row treeRow) string {
 }
 
 func (m monitorModel) Init() tea.Cmd {
+	if m.wait && m.state != nil && !hasPollable(m.state) {
+		return tea.Quit
+	}
 	if m.client == nil || m.interval <= 0 || m.state == nil || !hasPollable(m.state) {
 		return nil
 	}
@@ -157,6 +161,9 @@ func (m monitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = nil
 		m.pruneExpansion()
 		m.rebuildRows(selectedKey)
+		if m.wait && !hasPollable(m.state) {
+			return m, tea.Quit
+		}
 		if m.client != nil && hasPollable(m.state) {
 			return m, scheduleRefresh(m.interval)
 		}
@@ -431,12 +438,13 @@ func truncate(value string, width int) string {
 	return string(runes[:width-1]) + "…"
 }
 
-func runMonitorTUI(ctx context.Context, c *client, root pipeline, state *monitoredPipeline, include bool, interval time.Duration) (monitorModel, error) {
+func runMonitorTUI(ctx context.Context, c *client, root pipeline, state *monitoredPipeline, include bool, interval time.Duration, wait bool) (monitorModel, error) {
 	model := newMonitorModel(state)
 	model.client = c
 	model.root = root
 	model.include = include
 	model.interval = interval
+	model.wait = wait
 	model.ctx = ctx
 	finalModel, err := tea.NewProgram(model).Run()
 	if err != nil {

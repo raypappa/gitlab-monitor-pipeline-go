@@ -112,6 +112,45 @@ func TestMonitorModelRefreshSuccessPreservesSelection(t *testing.T) {
 	}
 }
 
+func TestMonitorModelWaitQuitsAfterTerminalSnapshot(t *testing.T) {
+	m := newMonitorModel(&monitoredPipeline{Pipeline: pipeline{ID: 1, ProjectID: 10, Status: "running"}})
+	m.wait = true
+	updated, cmd := m.Update(snapshotMsg{state: &monitoredPipeline{Pipeline: pipeline{ID: 1, ProjectID: 10, Status: "success"}}})
+	if cmd == nil {
+		t.Fatal("wait mode did not quit after terminal snapshot")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("wait completion command = %T, want tea.QuitMsg", cmd())
+	}
+	if updated.(monitorModel).state.Pipeline.Status != "success" {
+		t.Fatal("terminal snapshot was not retained")
+	}
+}
+
+func TestMonitorModelLiveRemainsInteractiveAfterTerminalSnapshot(t *testing.T) {
+	m := newMonitorModel(&monitoredPipeline{Pipeline: pipeline{ID: 1, ProjectID: 10, Status: "running"}})
+	m.wait = false
+	updated, cmd := m.Update(snapshotMsg{state: &monitoredPipeline{Pipeline: pipeline{ID: 1, ProjectID: 10, Status: "success"}}})
+	if cmd != nil {
+		t.Fatal("live mode quit or scheduled a command after terminal snapshot without a client")
+	}
+	if updated.(monitorModel).state.Pipeline.Status != "success" {
+		t.Fatal("terminal snapshot was not retained")
+	}
+}
+
+func TestMonitorModelWaitQuitsImmediatelyForFinalInitialSnapshot(t *testing.T) {
+	m := newMonitorModel(&monitoredPipeline{Pipeline: pipeline{ID: 1, ProjectID: 10, Status: "success"}})
+	m.wait = true
+	cmd := m.Init()
+	if cmd == nil {
+		t.Fatal("wait mode did not quit for an already-final snapshot")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("initial completion command = %T, want tea.QuitMsg", cmd())
+	}
+}
+
 func TestMonitorModelRefreshErrorPreservesSnapshot(t *testing.T) {
 	state := &monitoredPipeline{Pipeline: pipeline{ID: 1, ProjectID: 10}}
 	m := newMonitorModel(state)
