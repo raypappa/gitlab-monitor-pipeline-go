@@ -26,6 +26,7 @@ import (
 
 const maxAPIErrorBody = 4096
 const maxAPIErrorMessage = 256
+const apiRequestTimeout = 30 * time.Second
 
 type apiError struct {
 	path       string
@@ -272,7 +273,11 @@ func run(ctx context.Context, opts options) error {
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	c := &client{baseURL: strings.TrimRight(opts.baseURL, "/"), token: token, http: http.DefaultClient}
+	c := &client{
+		baseURL: strings.TrimRight(opts.baseURL, "/"),
+		token:   token,
+		http:    &http.Client{Timeout: apiRequestTimeout},
+	}
 	if opts.pipelineID == 0 && !branchProvided {
 		if projectFromGit || (func() bool {
 			envProject := os.Getenv("CI_PROJECT_PATH")
@@ -379,21 +384,21 @@ func (c *client) retryJob(ctx context.Context, projectID, jobID int64) (job, err
 func (c *client) requestText(ctx context.Context, path string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("PRIVATE-TOKEN", c.token)
 	req.Header.Set("Accept", "text/plain")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("request %s: %w", path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", apiErrorFromResponse(path, c.token, resp)
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("read response: %w", err)
 	}
 	return string(body), nil
 }
@@ -691,20 +696,20 @@ func (c *client) requestPage(ctx context.Context, method, path string, out any) 
 	}
 	req, err := http.NewRequestWithContext(ctx, method, requestURL, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("PRIVATE-TOKEN", c.token)
 	req.Header.Set("Accept", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("request %s: %w", path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, apiErrorFromResponse(path, c.token, resp)
 	}
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode response: %w", err)
 	}
 	return resp.Header, nil
 }

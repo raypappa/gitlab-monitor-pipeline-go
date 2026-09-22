@@ -145,7 +145,6 @@ func (m monitorModel) Init() tea.Cmd {
 	if m.client == nil || m.interval <= 0 || m.state == nil || !hasPollable(m.state) {
 		return nil
 	}
-	m.loading = true
 	return refreshSnapshot(m.ctx, m.client, m.root, m.include)
 }
 

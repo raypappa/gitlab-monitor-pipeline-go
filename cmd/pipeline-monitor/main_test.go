@@ -320,6 +320,41 @@ func TestRetryJobReturnsAPIError(t *testing.T) {
 	}
 }
 
+func TestRequestWrapsTransportError(t *testing.T) {
+	client := &client{
+		baseURL: "http://127.0.0.1:1",
+		token:   "test-token",
+		http:    &http.Client{Timeout: time.Second},
+	}
+
+	var output pipeline
+	err := client.get(context.Background(), "/api/v4/projects/1/pipelines/10", &output)
+	if err == nil || !strings.Contains(err.Error(), "request /api/v4/projects/1/pipelines/10:") {
+		t.Fatalf("client.get() error = %v, want request context", err)
+	}
+}
+
+func TestAPIRequestTimeoutIsBounded(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(100 * time.Millisecond):
+		case <-r.Context().Done():
+		}
+	}))
+	defer server.Close()
+
+	c := &client{baseURL: server.URL, http: &http.Client{Timeout: 10 * time.Millisecond}}
+	var output pipeline
+	start := time.Now()
+	err := c.get(context.Background(), "/slow", &output)
+	if err == nil {
+		t.Fatal("client.get() succeeded for a timed-out request")
+	}
+	if elapsed := time.Since(start); elapsed > 90*time.Millisecond {
+		t.Fatalf("request took %s, want timeout near 10ms", elapsed)
+	}
+}
+
 func TestAPIErrorIncludesBoundedJSONMessage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
