@@ -550,14 +550,16 @@ func (c *client) snapshot(ctx context.Context, p pipeline, include bool, seen ma
 		return nil, err
 	}
 	m := &monitoredPipeline{Pipeline: p}
-	if err := c.list(ctx, fmt.Sprintf("/api/v4/projects/%d/pipelines/%d/jobs?per_page=100", p.ProjectID, p.ID), &m.Jobs); err != nil {
+	jobs, err := paginate[job](c, ctx, fmt.Sprintf("/api/v4/projects/%d/pipelines/%d/jobs?per_page=100", p.ProjectID, p.ID))
+	if err != nil {
 		return nil, err
 	}
+	m.Jobs = jobs
 	if !include {
 		return m, nil
 	}
-	var bridges []bridge
-	if err := c.list(ctx, fmt.Sprintf("/api/v4/projects/%d/pipelines/%d/bridges?per_page=100", p.ProjectID, p.ID), &bridges); err != nil {
+	bridges, err := paginate[bridge](c, ctx, fmt.Sprintf("/api/v4/projects/%d/pipelines/%d/bridges?per_page=100", p.ProjectID, p.ID))
+	if err != nil {
 		return nil, err
 	}
 	for _, b := range bridges {
@@ -584,26 +586,93 @@ func (c *client) get(ctx context.Context, path string, out any) error {
 	return c.request(ctx, http.MethodGet, path, out)
 }
 
-func (c *client) list(ctx context.Context, path string, out any) error {
-	return c.request(ctx, http.MethodGet, path, out)
+func paginate[T any](c *client, ctx context.Context, path string) ([]T, error) {
+	var items []T
+	for {
+		var page []T
+		headers, err := c.requestPage(ctx, http.MethodGet, path, &page)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, page...)
+		next, ok := nextPage(path, headers)
+		if !ok {
+			return items, nil
+		}
+		path = next
+	}
 }
 
 func (c *client) request(ctx context.Context, method, path string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, nil)
+	_, err := c.requestPage(ctx, method, path, out)
+	return err
+}
+
+func (c *client) requestPage(ctx context.Context, method, path string, out any) (http.Header, error) {
+	requestURL := path
+	if !strings.HasPrefix(path, "http://") && !strings.HasPrefix(path, "https://") {
+		requestURL = c.baseURL + path
+	}
+	req, err := http.NewRequestWithContext(ctx, method, requestURL, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("PRIVATE-TOKEN", c.token)
 	req.Header.Set("Accept", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("GitLab API %s returned %s", path, resp.Status)
+		return nil, fmt.Errorf("GitLab API %s returned %s", path, resp.Status)
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return nil, err
+	}
+	return resp.Header, nil
+}
+
+func nextPage(path string, headers http.Header) (string, bool) {
+	if next := linkNext(headers.Get("Link")); next != "" {
+		return next, true
+	}
+	page := headers.Get("X-Next-Page")
+	if page == "" || page == "0" {
+		return "", false
+	}
+	u, err := url.Parse(path)
+	if err != nil {
+		return "", false
+	}
+	query := u.Query()
+	query.Set("page", page)
+	u.RawQuery = query.Encode()
+	return u.String(), true
+}
+
+func linkNext(value string) string {
+	for _, link := range strings.Split(value, ",") {
+		parts := strings.Split(link, ";")
+		if len(parts) < 2 {
+			continue
+		}
+		isNext := false
+		for _, parameter := range parts[1:] {
+			if strings.EqualFold(strings.TrimSpace(parameter), `rel="next"`) || strings.EqualFold(strings.TrimSpace(parameter), "rel=next") {
+				isNext = true
+				break
+			}
+		}
+		if !isNext {
+			continue
+		}
+		linkURL := strings.TrimSpace(parts[0])
+		if strings.HasPrefix(linkURL, "<") && strings.HasSuffix(linkURL, ">") {
+			return strings.Trim(linkURL, "<>")
+		}
+	}
+	return ""
 }
 
 func printPipeline(m *monitoredPipeline, prefix string, compact bool) {

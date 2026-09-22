@@ -65,6 +65,100 @@ func TestSnapshotIncludesDownstreamPipeline(t *testing.T) {
 	}
 }
 
+func TestNextPageUsesLinkHeader(t *testing.T) {
+	path := "/api/v4/projects/1/pipelines/10/jobs?per_page=100"
+	got, ok := nextPage(path, http.Header{"Link": []string{"<https://gitlab.example.com/api/v4/projects/1/pipelines/10/jobs?page=2&per_page=100>; rel=\"next\""}})
+	if !ok || got != "https://gitlab.example.com/api/v4/projects/1/pipelines/10/jobs?page=2&per_page=100" {
+		t.Fatalf("nextPage() = %q, %v", got, ok)
+	}
+}
+
+func TestNextPageUsesGitLabHeader(t *testing.T) {
+	path := "/api/v4/projects/1/pipelines/10/jobs?per_page=100"
+	got, ok := nextPage(path, http.Header{"X-Next-Page": []string{"2"}})
+	if !ok || got != "/api/v4/projects/1/pipelines/10/jobs?page=2&per_page=100" {
+		t.Fatalf("nextPage() = %q, %v", got, ok)
+	}
+}
+
+func TestSnapshotIncludesAllPaginatedJobsAndDownstreamPipelines(t *testing.T) {
+	const childCount = 101
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/v4/projects/1/pipelines/10":
+			writeJSON(t, w, pipeline{ID: 10, ProjectID: 1, Status: "success", Ref: "main"})
+		case r.URL.Path == "/api/v4/projects/1/pipelines/10/jobs":
+			page := r.URL.Query().Get("page")
+			if page == "" || page == "1" {
+				jobs := make([]job, 100)
+				for i := range jobs {
+					jobs[i] = job{ID: int64(i + 1), Status: "success"}
+				}
+				w.Header().Set("X-Next-Page", "2")
+				writeJSON(t, w, jobs)
+				return
+			}
+			writeJSON(t, w, []job{{ID: 101, Status: "failed"}})
+		case r.URL.Path == "/api/v4/projects/1/pipelines/10/bridges":
+			page := r.URL.Query().Get("page")
+			start, end := 1, 100
+			if page == "2" {
+				start, end = 101, childCount
+			} else {
+				w.Header().Set("X-Next-Page", "2")
+			}
+			bridges := make([]bridge, 0, end-start+1)
+			for i := start; i <= end; i++ {
+				bridges = append(bridges, bridge{DownstreamPipe: &struct {
+					ID        int64  `json:"id"`
+					ProjectID int64  `json:"project_id"`
+					Status    string `json:"status"`
+					Ref       string `json:"ref"`
+					SHA       string `json:"sha"`
+					WebURL    string `json:"web_url"`
+					Name      string `json:"name"`
+				}{ID: int64(i), ProjectID: 2, Status: "success", Ref: "main"}})
+			}
+			writeJSON(t, w, bridges)
+		case strings.HasPrefix(r.URL.Path, "/api/v4/projects/2/pipelines/") && !strings.HasSuffix(r.URL.Path, "/jobs") && !strings.HasSuffix(r.URL.Path, "/bridges"):
+			id := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+			pipelineID := 0
+			if _, err := fmt.Sscan(id, &pipelineID); err != nil || pipelineID < 1 || pipelineID > childCount {
+				http.NotFound(w, r)
+				return
+			}
+			status := "success"
+			if pipelineID == childCount {
+				status = "failed"
+			}
+			writeJSON(t, w, pipeline{ID: int64(pipelineID), ProjectID: 2, Status: status, Ref: "main"})
+		case strings.HasPrefix(r.URL.Path, "/api/v4/projects/2/pipelines/") && strings.HasSuffix(r.URL.Path, "/jobs"):
+			writeJSON(t, w, []job{})
+		case strings.HasPrefix(r.URL.Path, "/api/v4/projects/2/pipelines/") && strings.HasSuffix(r.URL.Path, "/bridges"):
+			writeJSON(t, w, []bridge{})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	c := &client{baseURL: server.URL, token: "test-token", http: server.Client()}
+	state, err := c.snapshot(context.Background(), pipeline{ID: 10, ProjectID: 1}, true, map[string]bool{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Jobs) != 101 {
+		t.Fatalf("root jobs = %d, want 101", len(state.Jobs))
+	}
+	if len(state.Children) != childCount {
+		t.Fatalf("downstream pipelines = %d, want %d", len(state.Children), childCount)
+	}
+	if !hasFailed(state) {
+		t.Fatal("expected late paginated failure to be detected")
+	}
+}
+
 func TestShouldOfferJobLogs(t *testing.T) {
 	tests := map[string]struct {
 		opts options
