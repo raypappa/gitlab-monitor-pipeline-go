@@ -320,6 +320,60 @@ func TestRetryJobReturnsAPIError(t *testing.T) {
 	}
 }
 
+func TestAPIErrorIncludesBoundedJSONMessage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		writeJSON(t, w, map[string]string{"message": "pipeline is invalid"})
+	}))
+	defer server.Close()
+
+	c := &client{baseURL: server.URL, token: "test-token", http: server.Client()}
+	_, err := c.retryJob(context.Background(), 1, 101)
+	if err == nil || !strings.Contains(err.Error(), "pipeline is invalid") || !strings.Contains(err.Error(), "422 Unprocessable Entity") {
+		t.Fatalf("retryJob() error = %v, want status and JSON message", err)
+	}
+}
+
+func TestAPIErrorIncludesBoundedPlainTextWithoutSecretsOrHugeBody(t *testing.T) {
+	secret := "test-token"
+	body := strings.Repeat("x", maxAPIErrorMessage+100) + " PRIVATE-TOKEN=" + secret
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	c := &client{baseURL: server.URL, token: secret, http: server.Client()}
+	_, err := c.retryJob(context.Background(), 1, 101)
+	if err == nil {
+		t.Fatal("retryJob() succeeded for error response")
+	}
+	message := err.Error()
+	if strings.Contains(message, secret) || len(message) > len("GitLab API /api/v4/projects/1/jobs/101/retry returned 502 Bad Gateway: ")+maxAPIErrorMessage+3 {
+		t.Fatalf("API error leaked or exceeded bound: %q", message)
+	}
+}
+
+func TestRefreshModelWithDeterministicAPIStopsPermanentError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		writeJSON(t, w, map[string]string{"message": "pipeline not found"})
+	}))
+	defer server.Close()
+
+	c := &client{baseURL: server.URL, token: "test-token", http: server.Client()}
+	m := newMonitorModel(&monitoredPipeline{Pipeline: pipeline{ID: 10, ProjectID: 1, Status: "running"}})
+	m.client, m.root, m.interval = c, pipeline{ID: 10, ProjectID: 1}, time.Second
+	msg := refreshSnapshot(context.Background(), c, m.root, false)()
+	updated, cmd := m.Update(msg)
+	got := updated.(monitorModel)
+	if cmd != nil || got.refreshFailures != 1 || !strings.Contains(got.err.Error(), "pipeline not found") {
+		t.Fatalf("model = %#v, command = %v", got, cmd)
+	}
+}
+
 func TestHasFailedIgnoresAllowedFailure(t *testing.T) {
 	state := &monitoredPipeline{
 		Pipeline: pipeline{Status: "success"},

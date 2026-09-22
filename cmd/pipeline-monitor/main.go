@@ -24,6 +24,72 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const maxAPIErrorBody = 4096
+const maxAPIErrorMessage = 256
+
+type apiError struct {
+	path       string
+	status     string
+	statusCode int
+	message    string
+}
+
+func (e *apiError) Error() string {
+	if e.message == "" {
+		return fmt.Sprintf("GitLab API %s returned %s", e.path, e.status)
+	}
+	return fmt.Sprintf("GitLab API %s returned %s: %s", e.path, e.status, e.message)
+}
+
+func (e *apiError) retryable() bool {
+	return e.statusCode == http.StatusRequestTimeout || e.statusCode == http.StatusTooManyRequests || e.statusCode >= 500
+}
+
+func apiErrorFromResponse(path, token string, resp *http.Response) error {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxAPIErrorBody))
+	if err != nil {
+		return &apiError{path: path, status: resp.Status, statusCode: resp.StatusCode}
+	}
+	return &apiError{
+		path:       path,
+		status:     resp.Status,
+		statusCode: resp.StatusCode,
+		message:    responseErrorMessage(body, token),
+	}
+}
+
+func responseErrorMessage(body []byte, token string) string {
+	var payload struct {
+		Message          json.RawMessage `json:"message"`
+		Error            json.RawMessage `json:"error"`
+		ErrorDescription json.RawMessage `json:"error_description"`
+	}
+	if json.Unmarshal(body, &payload) == nil {
+		for _, raw := range []json.RawMessage{payload.Message, payload.Error, payload.ErrorDescription} {
+			var value string
+			if json.Unmarshal(raw, &value) == nil && value != "" {
+				return sanitizeAPIErrorMessage(value, token)
+			}
+		}
+	}
+	return sanitizeAPIErrorMessage(string(body), token)
+}
+
+func sanitizeAPIErrorMessage(message, token string) string {
+	message = strings.Join(strings.Fields(message), " ")
+	if token != "" {
+		message = strings.ReplaceAll(message, token, "[REDACTED]")
+	}
+	message = strings.ReplaceAll(message, "PRIVATE-TOKEN", "[REDACTED]")
+	message = strings.ReplaceAll(message, "private_token", "[REDACTED]")
+	message = strings.ReplaceAll(message, "access_token", "[REDACTED]")
+	message = strings.ReplaceAll(message, "password", "[REDACTED]")
+	if len(message) > maxAPIErrorMessage {
+		message = message[:maxAPIErrorMessage] + "..."
+	}
+	return message
+}
+
 type client struct {
 	baseURL string
 	token   string
@@ -323,7 +389,7 @@ func (c *client) requestText(ctx context.Context, path string) (string, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("GitLab API %s returned %s", path, resp.Status)
+		return "", apiErrorFromResponse(path, c.token, resp)
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -635,7 +701,7 @@ func (c *client) requestPage(ctx context.Context, method, path string, out any) 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("GitLab API %s returned %s", path, resp.Status)
+		return nil, apiErrorFromResponse(path, c.token, resp)
 	}
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 		return nil, err

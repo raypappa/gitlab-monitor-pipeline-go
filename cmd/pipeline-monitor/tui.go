@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -11,25 +13,28 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+const maxRefreshFailures = 3
+
 type monitorModel struct {
-	state    *monitoredPipeline
-	rows     []treeRow
-	selected int
-	expanded map[string]bool
-	width    int
-	height   int
-	status   string
-	err      error
-	client   *client
-	root     pipeline
-	include  bool
-	interval time.Duration
-	wait     bool
-	loading  bool
-	ctx      context.Context
-	view     string
-	trace    string
-	tracePos int
+	state           *monitoredPipeline
+	rows            []treeRow
+	selected        int
+	expanded        map[string]bool
+	width           int
+	height          int
+	status          string
+	err             error
+	client          *client
+	root            pipeline
+	include         bool
+	interval        time.Duration
+	wait            bool
+	loading         bool
+	refreshFailures int
+	ctx             context.Context
+	view            string
+	trace           string
+	tracePos        int
 }
 
 type snapshotMsg struct {
@@ -159,6 +164,7 @@ func (m monitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.state = msg.state
 		m.loading = false
+		m.refreshFailures = 0
 		m.err = nil
 		m.pruneExpansion()
 		m.rebuildRows(selectedKey)
@@ -172,8 +178,15 @@ func (m monitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case snapshotErrMsg:
 		m.loading = false
 		m.err = msg.err
-		if m.client != nil && m.interval > 0 {
+		m.refreshFailures++
+		if m.client != nil && m.interval > 0 && refreshRetryable(msg.err) && m.refreshFailures <= maxRefreshFailures {
+			m.status = fmt.Sprintf("refresh failed (%d/%d); retrying", m.refreshFailures, maxRefreshFailures)
 			return m, scheduleRefresh(m.interval)
+		}
+		if refreshRetryable(msg.err) {
+			m.status = fmt.Sprintf("refresh stopped after %d failures; fix the error and restart", m.refreshFailures)
+		} else {
+			m.status = "refresh stopped; fix the error and restart"
 		}
 		return m, nil
 	case traceMsg:
@@ -313,9 +326,24 @@ func (m monitorModel) viewText() string {
 	footer := m.status
 	if m.err != nil {
 		footer = "error: " + m.err.Error()
+		if m.status != "" {
+			footer += " | " + m.status
+		}
 	}
 	lines = append(lines, truncate(footer, m.width))
 	return strings.Join(lines, "\n")
+}
+
+func refreshRetryable(err error) bool {
+	var apiErr *apiError
+	if errors.As(err, &apiErr) {
+		return apiErr.retryable()
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr)
 }
 
 func (m monitorModel) traceText() string {

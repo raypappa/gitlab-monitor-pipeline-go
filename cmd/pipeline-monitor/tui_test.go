@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -215,6 +216,48 @@ func TestMonitorModelRefreshErrorPreservesSnapshot(t *testing.T) {
 	got := updated.(monitorModel)
 	if got.state != state || got.err != context.Canceled {
 		t.Fatalf("error model = %#v", got)
+	}
+}
+
+func TestRefreshRetryableClassifiesAPIErrors(t *testing.T) {
+	for _, test := range []struct {
+		statusCode int
+		want       bool
+	}{
+		{statusCode: 400, want: false},
+		{statusCode: 429, want: true},
+		{statusCode: 503, want: true},
+	} {
+		if got := refreshRetryable(&apiError{statusCode: test.statusCode}); got != test.want {
+			t.Fatalf("refreshRetryable(%d) = %v, want %v", test.statusCode, got, test.want)
+		}
+	}
+}
+
+func TestMonitorModelBoundsRefreshRetries(t *testing.T) {
+	m := newMonitorModel(&monitoredPipeline{Pipeline: pipeline{ID: 1, ProjectID: 10, Status: "running"}})
+	m.client = &client{}
+	m.interval = time.Second
+	for i := 1; i <= maxRefreshFailures+1; i++ {
+		updated, cmd := m.Update(snapshotErrMsg{err: &apiError{statusCode: 503}})
+		m = updated.(monitorModel)
+		if (i <= maxRefreshFailures) != (cmd != nil) {
+			t.Fatalf("failure %d retry command = %v", i, cmd != nil)
+		}
+	}
+	if !strings.Contains(m.status, "stopped after") {
+		t.Fatalf("final status = %q, want bounded retry message", m.status)
+	}
+}
+
+func TestMonitorModelStopsPermanentRefreshError(t *testing.T) {
+	m := newMonitorModel(&monitoredPipeline{Pipeline: pipeline{ID: 1, ProjectID: 10, Status: "running"}})
+	m.client = &client{}
+	m.interval = time.Second
+	updated, cmd := m.Update(snapshotErrMsg{err: &apiError{statusCode: 404, message: "pipeline not found"}})
+	got := updated.(monitorModel)
+	if cmd != nil || got.refreshFailures != 1 || !strings.Contains(got.status, "stopped") {
+		t.Fatalf("model = %#v, command = %v", got, cmd)
 	}
 }
 
