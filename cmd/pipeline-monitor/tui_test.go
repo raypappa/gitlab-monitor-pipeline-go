@@ -49,6 +49,23 @@ func TestMonitorModelViewIsBounded(t *testing.T) {
 	}
 }
 
+func TestMonitorModelDetailsOnlyRenderForSelectedRow(t *testing.T) {
+	m := newMonitorModel(&monitoredPipeline{
+		Pipeline: pipeline{ID: 1, ProjectID: 10},
+		Jobs:     []job{{ID: 2, Name: "unit-tests"}},
+	})
+	m.width = 100
+
+	selected := m.renderLine(0)
+	job := m.renderLine(1)
+	if !strings.Contains(selected, "| id 1 | project 10 |") {
+		t.Fatalf("selected row is missing details: %q", selected)
+	}
+	if strings.Contains(job, "| id 1 | project 10 |") {
+		t.Fatalf("job row repeats selected pipeline details: %q", job)
+	}
+}
+
 func TestMonitorModelResize(t *testing.T) {
 	m := newMonitorModel(nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 42, Height: 12})

@@ -352,7 +352,10 @@ func (m monitorModel) renderLine(index int) string {
 	if m.width >= 90 {
 		leftWidth := m.width * 3 / 5
 		left := truncate(m.renderRow(index), leftWidth)
-		right := truncate(m.detailsText(), m.width-leftWidth-1)
+		right := ""
+		if index == m.selected {
+			right = truncate(m.detailsText(), m.width-leftWidth-1)
+		}
 		return left + strings.Repeat(" ", maxInt(1, leftWidth-lipgloss.Width(left))) + " " + right
 	}
 	return m.renderRow(index)
