@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestMonitorModelStartsAtRoot(t *testing.T) {
@@ -46,6 +47,62 @@ func TestMonitorModelViewIsBounded(t *testing.T) {
 	}
 	if got := lipgloss.Width(m.viewText()); got > m.width {
 		t.Fatalf("view width = %d, want <= %d", got, m.width)
+	}
+}
+
+func TestTruncatePreservesASCIIBehavior(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		width int
+		want  string
+	}{
+		{name: "no truncation", value: "hello", width: 5, want: "hello"},
+		{name: "ellipsis", value: "hello", width: 4, want: "hel…"},
+		{name: "single column", value: "hello", width: 1, want: "h"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := truncate(tt.value, tt.width); got != tt.want {
+				t.Fatalf("truncate(%q, %d) = %q, want %q", tt.value, tt.width, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTruncateUsesDisplayWidthAndGraphemeClusters(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		width int
+		want  string
+	}{
+		{name: "CJK", value: "你好世界", width: 5, want: "你好…"},
+		{name: "emoji", value: "🙂abc", width: 3, want: "🙂…"},
+		{name: "combining mark", value: "e\u0301abc", width: 3, want: "e\u0301a…"},
+		{name: "wide glyph does not fit", value: "你abc", width: 1, want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := truncate(tt.value, tt.width)
+			if got != tt.want {
+				t.Fatalf("truncate(%q, %d) = %q, want %q", tt.value, tt.width, got, tt.want)
+			}
+			if gotWidth := ansi.StringWidth(got); gotWidth > tt.width {
+				t.Fatalf("truncate(%q, %d) width = %d, want <= %d", tt.value, tt.width, gotWidth, tt.width)
+			}
+		})
+	}
+}
+
+func TestTruncatePreservesStyledStatusText(t *testing.T) {
+	value := "\x1b[32msuccess\x1b[0m"
+	got := truncate(value, 5)
+	if got != "\x1b[32msucc…\x1b[0m" {
+		t.Fatalf("truncate(styled status) = %q, want %q", got, "\x1b[32msucc…\x1b[0m")
+	}
+	if gotWidth := ansi.StringWidth(got); gotWidth > 5 {
+		t.Fatalf("styled status width = %d, want <= 5", gotWidth)
 	}
 }
 

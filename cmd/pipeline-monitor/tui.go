@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 type monitorModel struct {
@@ -428,14 +429,13 @@ func truncate(value string, width int) string {
 	if width <= 0 {
 		return ""
 	}
-	if lipgloss.Width(value) <= width {
+	if ansi.StringWidth(value) <= width {
 		return value
 	}
-	runes := []rune(value)
 	if width == 1 {
-		return string(runes[:1])
+		return ansi.Cut(value, 0, 1)
 	}
-	return string(runes[:width-1]) + "…"
+	return ansi.Truncate(value, width, "…")
 }
 
 func runMonitorTUI(ctx context.Context, c *client, root pipeline, state *monitoredPipeline, include bool, interval time.Duration, wait bool) (monitorModel, error) {
