@@ -204,7 +204,7 @@ func selectRenderMode(opts options, terminal bool) renderMode {
 	if opts.compact {
 		return compactMode
 	}
-	if opts.noTUI || !terminal {
+	if opts.noTUI || opts.wait || !terminal {
 		return plainMode
 	}
 	return tuiMode

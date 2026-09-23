@@ -35,6 +35,9 @@ type monitorModel struct {
 	view            string
 	trace           string
 	tracePos        int
+	traceJob        *traceableJob
+	traceFollowing  bool
+	traceLoading    bool
 }
 
 type snapshotMsg struct {
@@ -46,6 +49,8 @@ type snapshotErrMsg struct {
 }
 
 type refreshTickMsg struct{}
+
+type traceRefreshTickMsg struct{}
 
 type traceMsg struct {
 	trace string
@@ -99,6 +104,10 @@ func scheduleRefresh(interval time.Duration) tea.Cmd {
 	return tea.Tick(interval, func(time.Time) tea.Msg { return refreshTickMsg{} })
 }
 
+func scheduleTraceRefresh(interval time.Duration) tea.Cmd {
+	return tea.Tick(interval, func(time.Time) tea.Msg { return traceRefreshTickMsg{} })
+}
+
 func newMonitorModel(state *monitoredPipeline) monitorModel {
 	expanded := map[string]bool{}
 	if state != nil {
@@ -150,6 +159,12 @@ func (m monitorModel) Init() tea.Cmd {
 
 func (m monitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case traceRefreshTickMsg:
+		if !m.traceFollowing || m.view != "trace" || m.client == nil || m.traceJob == nil || m.traceLoading || m.interval <= 0 {
+			return m, nil
+		}
+		m.traceLoading = true
+		return m, fetchTrace(m.ctx, m.client, m.traceJob, false)
 	case refreshTickMsg:
 		if m.client == nil || m.loading || !hasPollable(m.state) {
 			return m, nil
@@ -189,6 +204,7 @@ func (m monitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case traceMsg:
+		m.traceLoading = false
 		m.err = nil
 		if msg.save {
 			path := fmt.Sprintf("job-%d.txt", msg.job.job.ID)
@@ -201,10 +217,22 @@ func (m monitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.view = "trace"
 		m.trace = msg.trace
+		m.traceJob = msg.job
+		if m.traceFollowing {
+			m.tracePos = m.traceLineCount()
+			if m.interval > 0 {
+				return m, scheduleTraceRefresh(m.interval)
+			}
+			return m, nil
+		}
 		m.tracePos = 0
 		return m, nil
 	case traceErrMsg:
+		m.traceLoading = false
 		m.err = msg.err
+		if m.traceFollowing && m.interval > 0 {
+			return m, scheduleTraceRefresh(m.interval)
+		}
 		return m, nil
 	case retryMsg:
 		m.status = fmt.Sprintf("retried job %d (%s)", msg.job.ID, msg.job.Status)
@@ -225,14 +253,22 @@ func (m monitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "q", "esc", "ctrl+c":
 				m.view = ""
+				m.traceFollowing = false
 			case "up", "k":
 				if m.tracePos > 0 {
 					m.tracePos--
 				}
 			case "down", "j":
 				m.tracePos++
+			case "G":
+				m.tracePos = m.traceLineCount()
 			case "f":
-				m.tracePos = len(strings.Split(strings.TrimSuffix(m.trace, "\n"), "\n"))
+				m.traceFollowing = true
+				m.tracePos = m.traceLineCount()
+				if m.client != nil && m.traceJob != nil && m.interval > 0 && !m.traceLoading {
+					m.traceLoading = true
+					return m, fetchTrace(m.ctx, m.client, m.traceJob, false)
+				}
 			}
 			return m, nil
 		}
@@ -372,8 +408,20 @@ func (m monitorModel) traceText() string {
 	for len(result) < m.height-1 {
 		result = append(result, "")
 	}
-	result = append(result, truncate("esc: back  j/k: scroll  f: follow  q: quit", m.width))
+	footer := "esc: back  j/k: scroll  G: bottom  f: follow  q: quit"
+	if m.traceFollowing {
+		footer = "esc: back  j/k: scroll  G: bottom  f: following  q: quit"
+	}
+	result = append(result, truncate(footer, m.width))
 	return strings.Join(result, "\n")
+}
+
+func (m monitorModel) traceLineCount() int {
+	lines := strings.Split(strings.TrimSuffix(m.trace, "\n"), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		return 0
+	}
+	return len(lines)
 }
 
 func (m monitorModel) selectedJob() *traceableJob {

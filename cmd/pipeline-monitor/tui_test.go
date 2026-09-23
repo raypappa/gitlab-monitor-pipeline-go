@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -291,18 +293,60 @@ func TestMonitorModelTraceViewIsBounded(t *testing.T) {
 	}
 }
 
-func TestMonitorModelTraceFollowMovesToBottom(t *testing.T) {
+func TestMonitorModelTraceBottomKeyMovesToBottom(t *testing.T) {
 	m := newMonitorModel(nil)
 	m.width, m.height, m.view = 20, 5, "trace"
 	m.trace = "one\ntwo\nthree\nfour\nfive\nsix"
 	m.tracePos = 0
-	updated, _ := m.Update(tea.KeyPressMsg{Text: "f"})
+	updated, cmd := m.Update(tea.KeyPressMsg{Text: "G"})
 	got := updated.(monitorModel)
+	if cmd != nil {
+		t.Fatalf("G command = %v, want nil", cmd)
+	}
 	if got.tracePos != 6 {
-		t.Fatalf("trace position after f = %d, want 6", got.tracePos)
+		t.Fatalf("trace position after G = %d, want 6", got.tracePos)
 	}
 	if !strings.Contains(got.traceText(), "six") {
-		t.Fatalf("follow view does not show final trace line: %q", got.traceText())
+		t.Fatalf("bottom view does not show final trace line: %q", got.traceText())
+	}
+}
+
+func TestMonitorModelTraceFollowFetchesAndSchedulesRefresh(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		_, _ = w.Write([]byte("line 1\nline 2\n"))
+	}))
+	defer server.Close()
+
+	m := newMonitorModel(nil)
+	m.client = &client{baseURL: server.URL, http: server.Client()}
+	m.ctx = context.Background()
+	m.interval = time.Millisecond
+	m.view = "trace"
+	m.trace = "line 1\n"
+	m.traceJob = &traceableJob{projectID: 7, job: job{ID: 42}}
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Text: "f"})
+	m = updated.(monitorModel)
+	if cmd == nil || !m.traceFollowing || !m.traceLoading {
+		t.Fatalf("follow state = %#v, command = %v", m, cmd)
+	}
+	updated, next := m.Update(cmd())
+	m = updated.(monitorModel)
+	if requests != 1 || m.trace != "line 1\nline 2\n" || next == nil {
+		t.Fatalf("initial follow fetch: requests=%d trace=%q next=%v", requests, m.trace, next != nil)
+	}
+
+	updated, cmd = m.Update(traceRefreshTickMsg{})
+	m = updated.(monitorModel)
+	if cmd == nil || !m.traceLoading {
+		t.Fatalf("scheduled follow refresh: model=%#v command=%v", m, cmd)
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(monitorModel)
+	if requests != 2 || m.trace != "line 1\nline 2\n" {
+		t.Fatalf("scheduled follow fetch: requests=%d trace=%q", requests, m.trace)
 	}
 }
 
@@ -315,6 +359,7 @@ func TestSelectRenderMode(t *testing.T) {
 	}{
 		{name: "json wins", opts: options{output: "json", compact: true}, terminal: true, want: jsonMode},
 		{name: "compact wins", opts: options{output: "text", compact: true}, terminal: true, want: compactMode},
+		{name: "wait avoids tui", opts: options{output: "text", wait: true}, terminal: true, want: plainMode},
 		{name: "no tui", opts: options{output: "text", noTUI: true}, terminal: true, want: plainMode},
 		{name: "redirected", opts: options{output: "text"}, terminal: false, want: plainMode},
 		{name: "interactive", opts: options{output: "text"}, terminal: true, want: tuiMode},
