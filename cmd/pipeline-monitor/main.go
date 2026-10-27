@@ -1,17 +1,20 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -27,12 +30,14 @@ import (
 const maxAPIErrorBody = 4096
 const maxAPIErrorMessage = 256
 const apiRequestTimeout = 30 * time.Second
+const maxAPIRequestRetries = 4
 
 type apiError struct {
 	path       string
 	status     string
 	statusCode int
 	message    string
+	retryAfter string
 }
 
 func (e *apiError) Error() string {
@@ -46,16 +51,30 @@ func (e *apiError) retryable() bool {
 	return e.statusCode == http.StatusRequestTimeout || e.statusCode == http.StatusTooManyRequests || e.statusCode >= 500
 }
 
+func (e *apiError) retryDelay(attempt int) time.Duration {
+	if seconds, err := strconv.Atoi(e.retryAfter); err == nil {
+		if seconds <= 0 {
+			return 0
+		}
+		return min(time.Duration(seconds)*time.Second, time.Minute)
+	}
+	if retryAt, err := http.ParseTime(e.retryAfter); err == nil {
+		return min(max(time.Until(retryAt), 0), time.Minute)
+	}
+	return min(time.Second<<attempt, 30*time.Second)
+}
+
 func apiErrorFromResponse(path, token string, resp *http.Response) error {
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxAPIErrorBody))
 	if err != nil {
-		return &apiError{path: path, status: resp.Status, statusCode: resp.StatusCode}
+		return &apiError{path: path, status: resp.Status, statusCode: resp.StatusCode, retryAfter: resp.Header.Get("Retry-After")}
 	}
 	return &apiError{
 		path:       path,
 		status:     resp.Status,
 		statusCode: resp.StatusCode,
 		message:    responseErrorMessage(body, token),
+		retryAfter: resp.Header.Get("Retry-After"),
 	}
 }
 
@@ -97,6 +116,18 @@ type client struct {
 	http    *http.Client
 }
 
+func newAPIClient(baseURL string) (*client, error) {
+	token := envOr("GITLAB_TOKEN", envOr("GITLAB_PRIVATE_TOKEN", ""))
+	if token == "" {
+		return nil, errors.New("GITLAB_TOKEN or GITLAB_PRIVATE_TOKEN is required")
+	}
+	return &client{
+		baseURL: strings.TrimRight(baseURL, "/"),
+		token:   token,
+		http:    &http.Client{Timeout: apiRequestTimeout},
+	}, nil
+}
+
 type pipeline struct {
 	ID         int64  `json:"id"`
 	IID        int64  `json:"iid"`
@@ -111,15 +142,17 @@ type pipeline struct {
 }
 
 type job struct {
-	ID           int64  `json:"id"`
-	Name         string `json:"name"`
-	Stage        string `json:"stage"`
-	Status       string `json:"status"`
-	AllowFailure bool   `json:"allow_failure"`
-	Ref          string `json:"ref"`
-	WebURL       string `json:"web_url"`
-	StartedAt    string `json:"started_at"`
-	FinishedAt   string `json:"finished_at"`
+	ID           int64    `json:"id"`
+	Name         string   `json:"name"`
+	Stage        string   `json:"stage"`
+	Status       string   `json:"status"`
+	AllowFailure bool     `json:"allow_failure"`
+	Ref          string   `json:"ref"`
+	WebURL       string   `json:"web_url"`
+	Duration     *float64 `json:"duration"`
+	CreatedAt    string   `json:"created_at"`
+	StartedAt    string   `json:"started_at"`
+	FinishedAt   string   `json:"finished_at"`
 }
 
 type menuItem struct {
@@ -238,6 +271,7 @@ func newCommand() *cobra.Command {
 	flags.StringVar(&opts.output, "output", "text", "Output format: text or json")
 	flags.DurationVar(&opts.interval, "interval", opts.interval, "Polling interval for live updates")
 	flags.StringVar(&opts.baseURL, "host", opts.baseURL, "GitLab host URL")
+	cmd.AddCommand(newUsageCommand(&opts.baseURL))
 	return cmd
 }
 
@@ -266,17 +300,11 @@ func run(ctx context.Context, opts options) error {
 	if opts.project == "" {
 		return errors.New("project is required; use --project or CI_PROJECT_PATH")
 	}
-	token := envOr("GITLAB_TOKEN", envOr("GITLAB_PRIVATE_TOKEN", ""))
-	if token == "" {
-		return errors.New("GITLAB_TOKEN or GITLAB_PRIVATE_TOKEN is required")
-	}
-
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	c := &client{
-		baseURL: strings.TrimRight(opts.baseURL, "/"),
-		token:   token,
-		http:    &http.Client{Timeout: apiRequestTimeout},
+	c, err := newAPIClient(opts.baseURL)
+	if err != nil {
+		return err
 	}
 	if opts.pipelineID == 0 && !branchProvided {
 		if projectFromGit || (func() bool {
@@ -689,7 +717,99 @@ func (c *client) request(ctx context.Context, method, path string, out any) erro
 	return err
 }
 
+func (c *client) postJSON(ctx context.Context, path string, body, out any) error {
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("encode request: %w", err)
+	}
+	for attempt := 0; ; attempt++ {
+		err := c.postJSONOnce(ctx, path, encoded, out)
+		if err == nil {
+			return nil
+		}
+		retry, waitErr := waitForAPIRequestRetry(ctx, err, attempt)
+		if waitErr != nil {
+			return waitErr
+		}
+		if !retry {
+			return err
+		}
+	}
+}
+
+func (c *client) postJSONOnce(ctx context.Context, path string, body []byte, out any) error {
+	requestURL := c.baseURL + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("PRIVATE-TOKEN", c.token)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("request %s: %w", path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return apiErrorFromResponse(path, c.token, resp)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	return nil
+}
+
 func (c *client) requestPage(ctx context.Context, method, path string, out any) (http.Header, error) {
+	for attempt := 0; ; attempt++ {
+		headers, err := c.requestPageOnce(ctx, method, path, out)
+		if err == nil {
+			return headers, nil
+		}
+		retry, waitErr := waitForAPIRequestRetry(ctx, err, attempt)
+		if waitErr != nil {
+			return nil, waitErr
+		}
+		if !retry {
+			return nil, err
+		}
+	}
+}
+
+func waitForAPIRequestRetry(ctx context.Context, err error, attempt int) (bool, error) {
+	if attempt >= maxAPIRequestRetries || ctx.Err() != nil || !retryableRequestError(err) {
+		return false, nil
+	}
+	var apiErr *apiError
+	delay := time.Duration(0)
+	if errors.As(err, &apiErr) {
+		delay = apiErr.retryDelay(attempt)
+	} else if attempt > 0 {
+		return false, nil
+	}
+	timer := time.NewTimer(delay)
+	select {
+	case <-ctx.Done():
+		timer.Stop()
+		return false, ctx.Err()
+	case <-timer.C:
+		return true, nil
+	}
+}
+
+func retryableRequestError(err error) bool {
+	var apiErr *apiError
+	if errors.As(err, &apiErr) {
+		return apiErr.retryable()
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var networkErr net.Error
+	return errors.As(err, &networkErr) && networkErr.Timeout()
+}
+
+func (c *client) requestPageOnce(ctx context.Context, method, path string, out any) (http.Header, error) {
 	requestURL := path
 	if !strings.HasPrefix(path, "http://") && !strings.HasPrefix(path, "https://") {
 		requestURL = c.baseURL + path

@@ -10,6 +10,7 @@ GitLab Pipeline Monitor is a Go command-line application for inspecting a GitLab
 - Return a non-zero status when a pipeline or required job fails.
 - Expand and collapse child pipelines while navigating a scrollable pipeline/job tree.
 - View selected pipeline or job details, job traces, save traces, and retry root or downstream jobs.
+- Summarize CI job-duration usage by group, project, and job.
 
 ## Getting the Code
 
@@ -48,6 +49,36 @@ pipeline-monitor --pipeline-id 12345 --output json
 
 Use `--help` to view the command's available flags.
 
+### CI Usage
+
+The `usage` subcommand totals recorded job durations for the current UTC month by default. It includes projects in subgroups and groups rows by project and exact job name. Each row includes total minutes and per-run mean, median, nearest-rank p95, and maximum duration in minutes. Omit `--project` and `--job` to include all non-archived projects and job names in the selected group. Use `--include-archived` to include archived projects. It also reports GitLab's group-level monthly compute-minute usage and configured limit when the API exposes them; this quota summary is separate from summed job durations and remains group-wide when project/job filters are used.
+
+```bash
+# Top 25 job/project rows across a group, ordered by total minutes (the default)
+pipeline-monitor usage --group my-group
+
+# All jobs in one project; return every row
+pipeline-monitor usage --group my-group --project my-group/my-project --limit 0
+
+# One job across the whole group
+pipeline-monitor usage --group my-group --job build
+
+# Filter multiple projects/jobs, change sort, and return the top 10
+pipeline-monitor usage --group my-group --project my-group/service-a --project my-group/service-b \
+  --job build --job test \
+  --sort runs --order desc --limit 10
+
+# Choose an inclusive date window and machine-readable output
+pipeline-monitor usage --group my-group --since 2026-10-01 --until 2026-10-31 --output json
+pipeline-monitor usage --group my-group --since 2026-10-01 --output csv
+```
+
+`--group` is required. `--project` accepts an exact project path or numeric project ID and can be repeated. `--job` accepts an exact job name and can be repeated. Supported sort keys are `minutes`, `runs`, `project`, `job`, and `latest`; the default is `minutes` descending. `--limit 0` disables the default 25-row limit. JSON includes the date window, job-duration total and statistics, quota summary, and total/returned row counts. CSV contains job rows on stdout and prints its summary to stderr.
+
+Job pages are cached locally in the operating system's user cache directory. Pages containing jobs from the last 24 hours use a five-minute TTL; pages whose newest job is older than a day use a 30-day TTL. Keyset pagination keeps page cursors stable and avoids offset-page shifts as new jobs arrive. Successful pages are saved as they are fetched so an incomplete scan can resume. Use `--refresh` to bypass cached pages and update them, `--no-cache` to disable cache reads and writes, `--cache-ttl 0s` to disable caching, `--historical-cache-ttl` to change the historical TTL, or `--cache-dir` to select another cache directory. Cache files contain only job names, durations, statuses, and creation timestamps; they do not contain the GitLab token. GitLab `429`, `408`, and `5xx` responses are retried up to four times, honoring `Retry-After` when present; transient network timeouts are retried once. Usage scanning uses a low request concurrency to reduce rate-limit pressure.
+
+Usage totals sum GitLab job durations, not pipeline wall-clock times. Retried jobs count as separate runs. Running jobs count when GitLab provides a duration, so their totals can increase while they run.
+
 Interactive terminals use a full-screen Bubble Tea interface with a bounded viewport, so large job lists and deeply nested downstream pipelines do not continuously print lines. The root pipeline is expanded initially; child pipelines can be expanded or collapsed independently. Wide terminals show a details pane beside the tree, while narrow terminals prioritize the tree.
 
 Use `up`/`down` or `j`/`k` to move, `home` and `end` to jump, `enter` to toggle a pipeline, `l` to view a selected job trace, `s` to save it as `job-<id>.txt`, `r` to retry it, and `q` or `ctrl+c` to quit. Trace viewing is bounded and scrollable with `j`/`k`; `esc` returns to the tree. Pipeline and job details include the owning project, IDs, status, duration-related metadata, and web URL where available.
@@ -65,7 +96,7 @@ Set one of these environment variables with a suitable GitLab token before runni
 - `GITLAB_TOKEN`
 - `GITLAB_PRIVATE_TOKEN`
 
-The CLI uses `GITLAB_TOKEN` when both variables are set. The token must be able to read the root and downstream projects, pipelines, jobs, and bridges. The application sends the token to GitLab using the `PRIVATE-TOKEN` request header.
+The CLI uses `GITLAB_TOKEN` when both variables are set. The token must be able to read the root and downstream projects, pipelines, jobs, and bridges. The `usage` subcommand also needs permission to list projects in the selected group and read jobs from each included project. The quota summary requires permission to read the group and its monthly CI-minute usage. The application sends the token to GitLab using the `PRIVATE-TOKEN` request header.
 
 `GITLAB_HOST` changes the GitLab host URL. If it is not set, the default is `https://gitlab.com`.
 
