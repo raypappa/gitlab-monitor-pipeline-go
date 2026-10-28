@@ -299,6 +299,7 @@ func TestRunUsageAggregatesAcrossGroupAndAppliesFiltersAndLimit(t *testing.T) {
 				t.Fatalf("GraphQL method = %s, want POST", r.Method)
 			}
 			var request struct {
+				Query     string            `json:"query"`
 				Variables map[string]string `json:"variables"`
 			}
 			body, err := io.ReadAll(r.Body)
@@ -311,6 +312,17 @@ func TestRunUsageAggregatesAcrossGroupAndAppliesFiltersAndLimit(t *testing.T) {
 			if request.Variables["namespaceId"] != "gid://gitlab/Group/99" || request.Variables["date"] != "2026-10-01" {
 				t.Fatalf("GraphQL variables = %#v, want selected group and month", request.Variables)
 			}
+			if strings.Contains(request.Query, "ciMinutesProjectMonthlyUsage") {
+				writeJSON(t, w, map[string]any{"data": map[string]any{"ciMinutesProjectMonthlyUsage": map[string]any{
+					"nodes": []any{
+						map[string]any{"minutes": 10, "project": map[string]any{"id": "gid://gitlab/Project/1", "name": "one"}},
+						map[string]any{"minutes": 20, "project": map[string]any{"id": "gid://gitlab/Project/2", "name": "two"}},
+						map[string]any{"minutes": 30, "project": map[string]any{"id": "gid://gitlab/Project/3", "name": "archived"}},
+					},
+					"pageInfo": map[string]any{"hasNextPage": false, "endCursor": "cursor-1"},
+				}}})
+				return
+			}
 			writeJSON(t, w, map[string]any{"data": map[string]any{"ciMinutesUsage": map[string]any{"nodes": []any{map[string]any{"minutes": 400, "month": "October", "monthIso8601": "2026-10-01"}}}}})
 		case "/api/v4/projects/1/jobs", "/api/v4/projects/2/jobs":
 			jobRequests.Add(1)
@@ -322,10 +334,10 @@ func TestRunUsageAggregatesAcrossGroupAndAppliesFiltersAndLimit(t *testing.T) {
 			}
 			if r.URL.Query().Get("id_before") != "" {
 				if r.URL.Path == "/api/v4/projects/1/jobs" {
-					writeJSON(t, w, []job{{ID: 9, Name: "build", Duration: floatPointer(600), CreatedAt: "2026-09-30T23:59:59Z"}})
+					writeJSON(t, w, []usageJob{{ID: 9, Name: "build", Duration: floatPointer(600), CreatedAt: "2026-09-30T23:59:59Z"}})
 					return
 				}
-				writeJSON(t, w, []job{})
+				writeJSON(t, w, []usageJob{})
 				return
 			}
 			if r.URL.Path == "/api/v4/projects/1/jobs" {
@@ -334,10 +346,10 @@ func TestRunUsageAggregatesAcrossGroupAndAppliesFiltersAndLimit(t *testing.T) {
 				query.Set("id_before", "10")
 				next.RawQuery = query.Encode()
 				w.Header().Set("Link", fmt.Sprintf("<%s>; rel=\"next\"", next.String()))
-				writeJSON(t, w, []job{
-					{ID: 12, Name: "test", Duration: floatPointer(120), CreatedAt: "2026-10-04T10:00:00Z"},
-					{ID: 11, Name: "build", Duration: floatPointer(30), CreatedAt: "2026-10-03T10:00:00Z"},
-					{ID: 10, Name: "build", Duration: floatPointer(60), CreatedAt: "2026-10-02T10:00:00Z"},
+				writeJSON(t, w, []usageJob{
+					{ID: 12, Name: "test", Duration: floatPointer(120), CreatedAt: "2026-10-04T10:00:00Z", Tags: []string{"saas-linux-medium-amd64"}, Runner: &usageRunner{RunnerType: "instance_type"}},
+					{ID: 11, Name: "build", Duration: floatPointer(30), CreatedAt: "2026-10-03T10:00:00Z", Tags: []string{"saas-linux-medium-amd64"}, Runner: &usageRunner{RunnerType: "instance_type"}},
+					{ID: 10, Name: "build", Duration: floatPointer(60), CreatedAt: "2026-10-02T10:00:00Z", Tags: []string{"saas-linux-small-amd64"}, Runner: &usageRunner{RunnerType: "instance_type"}},
 				})
 				return
 			}
@@ -346,7 +358,7 @@ func TestRunUsageAggregatesAcrossGroupAndAppliesFiltersAndLimit(t *testing.T) {
 			query.Set("id_before", "20")
 			next.RawQuery = query.Encode()
 			w.Header().Set("Link", fmt.Sprintf("<%s>; rel=\"next\"", next.String()))
-			writeJSON(t, w, []job{{ID: 20, Name: "build", Duration: floatPointer(180), CreatedAt: "2026-10-05T10:00:00Z"}})
+			writeJSON(t, w, []usageJob{{ID: 20, Name: "build", Duration: floatPointer(180), CreatedAt: "2026-10-05T10:00:00Z", Tags: []string{"saas-linux-large-amd64"}, Runner: &usageRunner{RunnerType: "instance_type"}}})
 		default:
 			http.NotFound(w, r)
 		}
@@ -354,6 +366,7 @@ func TestRunUsageAggregatesAcrossGroupAndAppliesFiltersAndLimit(t *testing.T) {
 	defer server.Close()
 	c := &client{baseURL: server.URL, token: "test-token", http: server.Client()}
 	cacheDir := t.TempDir()
+	databasePath := filepath.Join(t.TempDir(), "usage.sqlite")
 
 	// Act
 	var output bytes.Buffer
@@ -366,7 +379,8 @@ func TestRunUsageAggregatesAcrossGroupAndAppliesFiltersAndLimit(t *testing.T) {
 		sortBy:             "minutes",
 		order:              "desc",
 		output:             "json",
-		cacheDir:           cacheDir,
+		dbPath:             databasePath,
+		legacyCacheDir:     cacheDir,
 		cacheTTL:           5 * time.Minute,
 		historicalCacheTTL: 30 * 24 * time.Hour,
 	}, &output, &summary)
@@ -382,14 +396,20 @@ func TestRunUsageAggregatesAcrossGroupAndAppliesFiltersAndLimit(t *testing.T) {
 	if report.TotalRows != 3 || report.ReturnedRows != 1 || len(report.Rows) != 1 {
 		t.Fatalf("usage row counts = total %d, returned %d, len %d; want 3, 1, 1", report.TotalRows, report.ReturnedRows, len(report.Rows))
 	}
-	if report.Rows[0].Project != "example-group/two" || report.Rows[0].Job != "build" || report.Rows[0].Runs != 1 || report.Rows[0].Minutes != 3 {
+	if report.Rows[0].Project != "example-group/two" || report.Rows[0].Job != "build" || report.Rows[0].Runs != 1 || report.Rows[0].DurationMinutes != 3 {
 		t.Fatalf("top usage row = %#v, want example-group/two build 1 run 3 minutes", report.Rows[0])
 	}
-	if report.Rows[0].MeanMinutes != 3 || report.Rows[0].MedianMinutes != 3 || report.Rows[0].P95Minutes != 3 || report.Rows[0].MaxMinutes != 3 {
+	if report.Rows[0].MeanDurationMinutes != 3 || report.Rows[0].MedianDurationMinutes != 3 || report.Rows[0].P95DurationMinutes != 3 || report.Rows[0].MaxDurationMinutes != 3 {
 		t.Fatalf("single-run duration stats = %#v, want all 3 minutes", report.Rows[0])
 	}
 	if report.JobDurationMinutes != 6.5 {
 		t.Fatalf("job duration total = %.1f, want 6.5", report.JobDurationMinutes)
+	}
+	if !report.ProjectComputeAvailable || report.ProjectComputeMinutes == nil || *report.ProjectComputeMinutes != 30 {
+		t.Fatalf("project compute usage = available %v, total %v; want 30 GitLab-reported minutes for selected projects", report.ProjectComputeAvailable, report.ProjectComputeMinutes)
+	}
+	if report.Rows[0].EstimatedComputeMinutes == nil || *report.Rows[0].EstimatedComputeMinutes != 9 {
+		t.Fatalf("top row estimated compute = %v, want 9 minutes from the large hosted runner factor", report.Rows[0].EstimatedComputeMinutes)
 	}
 	if report.CIMinutesQuota == nil || !report.CIMinutesQuota.Available || report.CIMinutesQuota.Month != "2026-10-01" {
 		t.Fatalf("CI minute quota = %#v, want available October usage", report.CIMinutesQuota)
@@ -410,7 +430,8 @@ func TestRunUsageAggregatesAcrossGroupAndAppliesFiltersAndLimit(t *testing.T) {
 		sortBy:             "minutes",
 		order:              "desc",
 		output:             "json",
-		cacheDir:           cacheDir,
+		dbPath:             databasePath,
+		legacyCacheDir:     cacheDir,
 		cacheTTL:           5 * time.Minute,
 		historicalCacheTTL: 30 * 24 * time.Hour,
 	}, &output, &summary)
@@ -422,14 +443,20 @@ func TestRunUsageAggregatesAcrossGroupAndAppliesFiltersAndLimit(t *testing.T) {
 	if err := json.Unmarshal(output.Bytes(), &report); err != nil {
 		t.Fatalf("decode filtered usage report: %v", err)
 	}
-	if report.TotalRows != 1 || report.Rows[0].Project != "example-group/one" || report.Rows[0].Job != "build" || report.Rows[0].Runs != 2 || report.Rows[0].Minutes != 1.5 {
+	if report.TotalRows != 1 || report.Rows[0].Project != "example-group/one" || report.Rows[0].Job != "build" || report.Rows[0].Runs != 2 || report.Rows[0].DurationMinutes != 1.5 {
 		t.Fatalf("filtered usage report = %#v, want one example-group/one build row with 2 runs and 1.5 minutes", report)
 	}
-	if report.Rows[0].MeanMinutes != 0.75 || report.Rows[0].MedianMinutes != 0.75 || report.Rows[0].P95Minutes != 1 || report.Rows[0].MaxMinutes != 1 {
+	if report.Rows[0].MeanDurationMinutes != 0.75 || report.Rows[0].MedianDurationMinutes != 0.75 || report.Rows[0].P95DurationMinutes != 1 || report.Rows[0].MaxDurationMinutes != 1 {
 		t.Fatalf("filtered run-duration stats = %#v, want mean/median 0.75 and p95/max 1 minute", report.Rows[0])
 	}
-	if report.CachePagesRead == 0 {
-		t.Fatal("filtered usage report did not reuse cached job pages")
+	if report.ProjectComputeMinutes == nil || *report.ProjectComputeMinutes != 10 {
+		t.Fatalf("filtered project compute minutes = %v, want 10", report.ProjectComputeMinutes)
+	}
+	if report.EstimatedComputeMinutes != 2 {
+		t.Fatalf("filtered estimated compute minutes = %.2f, want 2.00", report.EstimatedComputeMinutes)
+	}
+	if report.ProjectsReadFromDatabase == 0 {
+		t.Fatal("filtered usage report did not read stored project data")
 	}
 	if got := jobRequests.Load(); got != 4 {
 		t.Fatalf("job API requests = %d, want 4 (first run only)", got)

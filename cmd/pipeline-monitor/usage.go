@@ -38,7 +38,8 @@ type usageOptions struct {
 	sortBy             string
 	order              string
 	output             string
-	cacheDir           string
+	dbPath             string
+	legacyCacheDir     string
 	cacheTTL           time.Duration
 	historicalCacheTTL time.Duration
 	noCache            bool
@@ -47,17 +48,28 @@ type usageOptions struct {
 }
 
 type groupProject struct {
-	ID                int64  `json:"id"`
-	PathWithNamespace string `json:"path_with_namespace"`
-	Archived          bool   `json:"archived"`
+	ID                int64            `json:"id"`
+	PathWithNamespace string           `json:"path_with_namespace"`
+	Archived          bool             `json:"archived"`
+	Namespace         projectNamespace `json:"namespace"`
+}
+
+type projectNamespace struct {
+	ID int64 `json:"id"`
 }
 
 type usageJob struct {
-	ID        int64    `json:"id"`
-	Name      string   `json:"name"`
-	Duration  *float64 `json:"duration"`
-	CreatedAt string   `json:"created_at"`
-	Status    string   `json:"status"`
+	ID        int64        `json:"id"`
+	Name      string       `json:"name"`
+	Duration  *float64     `json:"duration"`
+	CreatedAt string       `json:"created_at"`
+	Status    string       `json:"status"`
+	Tags      []string     `json:"tag_list"`
+	Runner    *usageRunner `json:"runner"`
+}
+
+type usageRunner struct {
+	RunnerType string `json:"runner_type"`
 }
 
 type usageKey struct {
@@ -66,39 +78,62 @@ type usageKey struct {
 }
 
 type usageTotal struct {
-	runs       int
-	duration   float64
-	durations  []float64
-	lastRun    time.Time
-	hasLastRun bool
+	runs                   int
+	duration               float64
+	durations              []float64
+	estimatedCompute       float64
+	estimatedComputeRuns   int
+	unestimatedComputeRuns int
+	lastRun                time.Time
+	hasLastRun             bool
 }
 
 type usageRow struct {
-	Project       string    `json:"project"`
-	Job           string    `json:"job"`
-	Runs          int       `json:"runs"`
-	Minutes       float64   `json:"minutes"`
-	MeanMinutes   float64   `json:"mean_minutes"`
-	MedianMinutes float64   `json:"median_minutes"`
-	P95Minutes    float64   `json:"p95_minutes"`
-	MaxMinutes    float64   `json:"max_minutes"`
-	LastRun       time.Time `json:"last_run"`
+	Project                 string    `json:"project"`
+	Job                     string    `json:"job"`
+	Runs                    int       `json:"runs"`
+	DurationMinutes         float64   `json:"duration_minutes"`
+	MeanDurationMinutes     float64   `json:"mean_duration_minutes"`
+	MedianDurationMinutes   float64   `json:"median_duration_minutes"`
+	P95DurationMinutes      float64   `json:"p95_duration_minutes"`
+	MaxDurationMinutes      float64   `json:"max_duration_minutes"`
+	EstimatedComputeMinutes *float64  `json:"known_run_estimated_compute_minutes,omitempty"`
+	EstimatedComputeRuns    int       `json:"estimated_compute_runs"`
+	UnestimatedComputeRuns  int       `json:"unestimated_compute_runs"`
+	LastRun                 time.Time `json:"last_run"`
+}
+
+type projectComputeUsageRow struct {
+	Project string `json:"project"`
+	Minutes int64  `json:"compute_minutes"`
 }
 
 type usageReport struct {
-	Group              string          `json:"group"`
-	Since              time.Time       `json:"since"`
-	Until              time.Time       `json:"until"`
-	JobDurationMinutes float64         `json:"job_duration_minutes"`
-	CIMinutesQuota     *ciMinutesQuota `json:"ci_minutes_quota,omitempty"`
-	CachePagesRead     int             `json:"cache_pages_read"`
-	CachePagesStale    int             `json:"cache_pages_stale"`
-	CacheProjectsRead  int             `json:"cache_projects_read"`
-	CacheProjectsStale int             `json:"cache_projects_stale"`
-	CacheNotice        string          `json:"cache_notice,omitempty"`
-	TotalRows          int             `json:"total_rows"`
-	ReturnedRows       int             `json:"returned_rows"`
-	Rows               []usageRow      `json:"rows"`
+	Group                    string                   `json:"group"`
+	DatabasePath             string                   `json:"database_path"`
+	Since                    time.Time                `json:"since"`
+	Until                    time.Time                `json:"until"`
+	JobDurationMinutes       float64                  `json:"job_duration_minutes"`
+	EstimatedComputeMinutes  float64                  `json:"known_run_estimated_compute_minutes"`
+	EstimatedComputeRuns     int                      `json:"estimated_compute_runs"`
+	UnestimatedComputeRuns   int                      `json:"unestimated_compute_runs"`
+	ComputeEstimateNotice    string                   `json:"compute_estimate_notice,omitempty"`
+	ProjectComputeAvailable  bool                     `json:"project_compute_available"`
+	ProjectComputePeriod     string                   `json:"project_compute_period,omitempty"`
+	ProjectComputeMinutes    *int64                   `json:"project_compute_minutes,omitempty"`
+	ProjectComputeByProject  []projectComputeUsageRow `json:"project_compute_by_project,omitempty"`
+	ProjectComputeNotice     string                   `json:"project_compute_notice,omitempty"`
+	CIMinutesQuota           *ciMinutesQuota          `json:"ci_minutes_quota,omitempty"`
+	LegacyCachePagesImported int                      `json:"legacy_cache_pages_imported"`
+	LegacyCacheJobsImported  int                      `json:"legacy_cache_jobs_imported"`
+	ProjectsSynced           int                      `json:"projects_synced"`
+	PagesSynced              int                      `json:"pages_synced"`
+	ProjectsReadFromDatabase int                      `json:"projects_read_from_database"`
+	ProjectsStale            int                      `json:"projects_stale"`
+	CacheNotice              string                   `json:"cache_notice,omitempty"`
+	TotalRows                int                      `json:"total_rows"`
+	ReturnedRows             int                      `json:"returned_rows"`
+	Rows                     []usageRow               `json:"rows"`
 }
 
 type ciMinutesQuota struct {
@@ -131,15 +166,32 @@ type ciMinutesUsageResponse struct {
 	} `json:"errors"`
 }
 
+type ciMinutesProjectUsageResponse struct {
+	Data struct {
+		Usage struct {
+			Nodes []struct {
+				Minutes *int64 `json:"minutes"`
+				Project struct {
+					ID   string `json:"id"`
+					Name string `json:"name"`
+				} `json:"project"`
+			} `json:"nodes"`
+			PageInfo struct {
+				EndCursor   string `json:"endCursor"`
+				HasNextPage bool   `json:"hasNextPage"`
+			} `json:"pageInfo"`
+		} `json:"ciMinutesProjectMonthlyUsage"`
+	} `json:"data"`
+	Errors []struct {
+		Message string `json:"message"`
+	} `json:"errors"`
+}
+
 type projectUsageResult struct {
-	project           groupProject
-	jobs              []usageJob
-	cachePagesRead    int
-	cachePagesStale   int
-	cacheProjectRead  bool
-	cacheProjectStale bool
-	cacheNotice       string
-	err               error
+	project groupProject
+	jobs    []usageJob
+	sync    usageSyncStats
+	err     error
 }
 
 func newUsageCommand(baseURL *string) *cobra.Command {
@@ -153,8 +205,8 @@ func newUsageCommand(baseURL *string) *cobra.Command {
 	}
 	cmd := &cobra.Command{
 		Use:   "usage",
-		Short: "Summarize GitLab CI job duration usage",
-		Long:  "Aggregate GitLab job durations by project and job across a group or selected projects.",
+		Short: "Summarize GitLab CI compute usage",
+		Long:  "Report GitLab's monthly compute minutes by project and show per-job duration with documented hosted-runner compute estimates.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			c, err := newAPIClient(*baseURL)
@@ -171,15 +223,17 @@ func newUsageCommand(baseURL *string) *cobra.Command {
 	flags.StringVar(&opts.since, "since", "", "Include jobs created on or after this UTC date or RFC3339 timestamp; defaults to the first of this month")
 	flags.StringVar(&opts.until, "until", "", "Include jobs created on or before this UTC date or RFC3339 timestamp; defaults to now")
 	flags.IntVar(&opts.limit, "limit", opts.limit, "Maximum rows to return; use 0 for no limit")
-	flags.StringVar(&opts.sortBy, "sort", opts.sortBy, "Sort rows by minutes, runs, project, job, or latest")
+	flags.StringVar(&opts.sortBy, "sort", opts.sortBy, "Sort job rows by duration minutes, runs, project, job, or latest")
 	flags.StringVar(&opts.order, "order", opts.order, "Sort order: desc or asc")
 	flags.StringVar(&opts.output, "output", opts.output, "Output format: table, json, or csv")
 	flags.BoolVar(&opts.includeArchived, "include-archived", false, "Include archived projects")
-	flags.BoolVar(&opts.noCache, "no-cache", false, "Do not read or write the local job-page cache")
-	flags.BoolVar(&opts.refresh, "refresh", false, "Fetch job pages from GitLab instead of reading cached pages")
-	flags.DurationVar(&opts.cacheTTL, "cache-ttl", opts.cacheTTL, "Maximum age of cached job pages; use 0s to disable caching")
-	flags.DurationVar(&opts.historicalCacheTTL, "historical-cache-ttl", opts.historicalCacheTTL, "Maximum age of cached job data older than one day")
-	flags.StringVar(&opts.cacheDir, "cache-dir", "", "Cache directory; defaults to the user cache directory")
+	flags.StringVar(&opts.dbPath, "db", "", "SQLite database path; defaults to the XDG user cache directory")
+	flags.StringVar(&opts.legacyCacheDir, "legacy-cache-dir", "", "Import legacy page caches from this directory")
+	flags.StringVar(&opts.legacyCacheDir, "cache-dir", "", "Deprecated alias for --legacy-cache-dir")
+	flags.BoolVar(&opts.noCache, "no-cache", false, "Ignore stored sync state and force a full API sync")
+	flags.BoolVar(&opts.refresh, "refresh", false, "Force a full API sync for selected projects")
+	flags.DurationVar(&opts.cacheTTL, "cache-ttl", opts.cacheTTL, "Minimum interval between recent API syncs; use 0s to refresh every run")
+	flags.DurationVar(&opts.historicalCacheTTL, "historical-cache-ttl", opts.historicalCacheTTL, "Interval between full historical API syncs; use 0s to rescan history every run")
 	flags.StringVar(baseURL, "host", *baseURL, "GitLab host URL")
 	return cmd
 }
@@ -192,31 +246,64 @@ func runUsage(ctx context.Context, c *client, opts usageOptions, output, summary
 	if err != nil {
 		return err
 	}
-	projects, err := c.groupProjects(ctx, opts.group)
+	store, databasePath, err := openUsageStore(ctx, opts.dbPath, c.baseURL)
 	if err != nil {
 		return err
 	}
-	projects, err = selectUsageProjects(projects, opts.projects, opts.includeArchived)
+	defer func() { _ = store.close() }()
+	allProjects, err := c.groupProjects(ctx, opts.group)
 	if err != nil {
 		return err
 	}
-	cacheEnabled := !opts.noCache && opts.cacheTTL > 0
-	cacheDir := ""
+	if err := store.upsertProjects(ctx, allProjects); err != nil {
+		return err
+	}
+	legacyPagesImported, legacyJobsImported := 0, 0
 	cacheNotice := ""
-	if cacheEnabled {
-		cacheDir, err = usageCacheDirectory(opts.cacheDir)
+	if !opts.noCache {
+		legacyCacheDir, cacheDirErr := usageCacheDirectory(opts.legacyCacheDir)
+		if cacheDirErr != nil {
+			cacheNotice = "legacy cache import skipped: " + cacheDirErr.Error()
+		} else {
+			legacyPagesImported, legacyJobsImported, err = store.importLegacyCaches(ctx, legacyCacheDir, allProjects, since)
+		}
 		if err != nil {
-			cacheEnabled = false
-			cacheNotice = "cache disabled: " + err.Error()
+			cacheNotice = joinUsageNotices(cacheNotice, "legacy cache import incomplete: "+err.Error())
 		}
 	}
+	projects, err := selectUsageProjects(allProjects, opts.projects, opts.includeArchived)
+	if err != nil {
+		return err
+	}
+	settings, settingsErr := c.groupQuotaSettings(ctx, opts.group)
 	var quota *ciMinutesQuota
 	if since.Year() != until.Year() || since.Month() != until.Month() {
 		quota = &ciMinutesQuota{Reason: "the selected date range spans multiple calendar months"}
+	} else if settingsErr != nil {
+		quota = &ciMinutesQuota{Reason: settingsErr.Error()}
 	} else {
-		quota, err = c.groupCIMinutesQuota(ctx, opts.group, since)
+		quota, err = c.groupQuotaForSettings(ctx, settings, since)
 		if err != nil {
 			quota = &ciMinutesQuota{Reason: err.Error()}
+		}
+	}
+	computeMonths, computeRangeSupported := projectComputeMonths(since, until, opts.until == "", time.Now().UTC())
+	computeByID := make(map[int64]int64)
+	projectComputeAvailable := false
+	projectComputeNotice := ""
+	projectComputePeriod := ""
+	if !computeRangeSupported {
+		projectComputeNotice = "GitLab exposes compute usage by calendar month, not for partial custom date ranges"
+	} else if settingsErr != nil {
+		projectComputeNotice = "could not load GitLab group settings for project compute usage: " + settingsErr.Error()
+	} else {
+		namespaceIDs := projectComputeNamespaceIDs(settings.ID, projects)
+		computeByID, err = c.groupProjectComputeUsage(ctx, namespaceIDs, computeMonths)
+		if err != nil {
+			projectComputeNotice = "could not load GitLab project compute usage: " + err.Error()
+		} else {
+			projectComputeAvailable = true
+			projectComputePeriod = formatComputeUsagePeriod(computeMonths)
 		}
 	}
 
@@ -224,24 +311,29 @@ func runUsage(ctx context.Context, c *client, opts usageOptions, output, summary
 	for _, name := range opts.jobs {
 		jobNames[name] = true
 	}
-	results := c.groupJobUsage(ctx, projects, since, until, opts, cacheDir, cacheEnabled)
+	results := groupJobUsage(ctx, c, store, projects, since, until, opts)
 	totals := make(map[usageKey]*usageTotal)
 	var fetchErrors []error
-	cachePagesRead := 0
-	cachePagesStale := 0
-	cacheProjectsRead := 0
-	cacheProjectsStale := 0
+	projectsSynced := 0
+	pagesSynced := 0
+	projectsReadFromDatabase := 0
+	projectsStale := 0
+	estimatedComputeMinutes := 0.0
+	estimatedComputeRuns := 0
+	unestimatedComputeRuns := 0
 	for result := range results {
-		cachePagesRead += result.cachePagesRead
-		cachePagesStale += result.cachePagesStale
-		if result.cacheProjectRead {
-			cacheProjectsRead++
+		if result.sync.synced {
+			projectsSynced++
 		}
-		if result.cacheProjectStale {
-			cacheProjectsStale++
+		pagesSynced += result.sync.pages
+		if result.sync.readFromDatabase {
+			projectsReadFromDatabase++
 		}
-		if result.cacheNotice != "" {
-			cacheNotice = joinUsageNotices(cacheNotice, result.cacheNotice)
+		if result.sync.stale {
+			projectsStale++
+		}
+		if result.sync.notice != "" {
+			cacheNotice = joinUsageNotices(cacheNotice, result.sync.notice)
 		}
 		if result.err != nil {
 			fetchErrors = append(fetchErrors, fmt.Errorf("%s: %w", result.project.PathWithNamespace, result.err))
@@ -264,6 +356,12 @@ func runUsage(ctx context.Context, c *client, opts usageOptions, output, summary
 			total.runs++
 			total.duration += *j.Duration
 			total.durations = append(total.durations, *j.Duration)
+			if costFactor, ok := hostedRunnerCostFactor(j, c.baseURL); ok {
+				total.estimatedCompute += estimateJobComputeMinutes(*j.Duration, costFactor)
+				total.estimatedComputeRuns++
+			} else {
+				total.unestimatedComputeRuns++
+			}
 			if !total.hasLastRun || createdAt.After(total.lastRun) {
 				total.lastRun = createdAt
 				total.hasLastRun = true
@@ -278,17 +376,42 @@ func runUsage(ctx context.Context, c *client, opts usageOptions, output, summary
 	jobDurationMinutes := 0.0
 	for key, total := range totals {
 		jobDurationMinutes += total.duration / 60
+		estimatedComputeMinutes += total.estimatedCompute
+		estimatedComputeRuns += total.estimatedComputeRuns
+		unestimatedComputeRuns += total.unestimatedComputeRuns
 		mean, median, p95, maximum := durationStatisticsMinutes(total.durations)
-		rows = append(rows, usageRow{
-			Project:       key.project,
-			Job:           key.job,
-			Runs:          total.runs,
-			Minutes:       math.Round(total.duration/60*10) / 10,
-			MeanMinutes:   math.Round(mean*100) / 100,
-			MedianMinutes: math.Round(median*100) / 100,
-			P95Minutes:    math.Round(p95*100) / 100,
-			MaxMinutes:    math.Round(maximum*100) / 100,
-			LastRun:       total.lastRun,
+		row := usageRow{
+			Project:                key.project,
+			Job:                    key.job,
+			Runs:                   total.runs,
+			DurationMinutes:        math.Round(total.duration/60*10) / 10,
+			MeanDurationMinutes:    math.Round(mean*100) / 100,
+			MedianDurationMinutes:  math.Round(median*100) / 100,
+			P95DurationMinutes:     math.Round(p95*100) / 100,
+			MaxDurationMinutes:     math.Round(maximum*100) / 100,
+			EstimatedComputeRuns:   total.estimatedComputeRuns,
+			UnestimatedComputeRuns: total.unestimatedComputeRuns,
+			LastRun:                total.lastRun,
+		}
+		if total.estimatedComputeRuns > 0 {
+			estimated := math.Round(total.estimatedCompute*100) / 100
+			row.EstimatedComputeMinutes = &estimated
+		}
+		rows = append(rows, row)
+	}
+	projectComputeRows := make([]projectComputeUsageRow, 0, len(projects))
+	var selectedProjectCompute int64
+	if projectComputeAvailable {
+		for _, project := range projects {
+			minutes, found := computeByID[project.ID]
+			if !found {
+				continue
+			}
+			selectedProjectCompute += minutes
+			projectComputeRows = append(projectComputeRows, projectComputeUsageRow{Project: project.PathWithNamespace, Minutes: minutes})
+		}
+		sort.Slice(projectComputeRows, func(i, j int) bool {
+			return projectComputeRows[i].Project < projectComputeRows[j].Project
 		})
 	}
 	sortUsageRows(rows, opts.sortBy, opts.order)
@@ -298,19 +421,33 @@ func runUsage(ctx context.Context, c *client, opts usageOptions, output, summary
 		rows = rows[:opts.limit]
 	}
 	report := usageReport{
-		Group:              opts.group,
-		Since:              since,
-		Until:              until,
-		JobDurationMinutes: math.Round(jobDurationMinutes*10) / 10,
-		CIMinutesQuota:     quota,
-		CachePagesRead:     cachePagesRead,
-		CachePagesStale:    cachePagesStale,
-		CacheProjectsRead:  cacheProjectsRead,
-		CacheProjectsStale: cacheProjectsStale,
-		CacheNotice:        cacheNotice,
-		TotalRows:          totalRows,
-		ReturnedRows:       len(rows),
-		Rows:               rows,
+		Group:                    opts.group,
+		DatabasePath:             databasePath,
+		Since:                    since,
+		Until:                    until,
+		JobDurationMinutes:       math.Round(jobDurationMinutes*10) / 10,
+		EstimatedComputeMinutes:  math.Round(estimatedComputeMinutes*100) / 100,
+		EstimatedComputeRuns:     estimatedComputeRuns,
+		UnestimatedComputeRuns:   unestimatedComputeRuns,
+		ComputeEstimateNotice:    "Estimates cover only runs with recognized hosted-runner metadata, including data returned by GitLab; legacy cache entries and unknown/custom runners are not estimated. --refresh can backfill metadata where GitLab still provides it. Estimates assume the standard-project factor and do not account for discounts or historical factor changes.",
+		ProjectComputeAvailable:  projectComputeAvailable,
+		ProjectComputePeriod:     projectComputePeriod,
+		ProjectComputeByProject:  projectComputeRows,
+		ProjectComputeNotice:     projectComputeNotice,
+		CIMinutesQuota:           quota,
+		LegacyCachePagesImported: legacyPagesImported,
+		LegacyCacheJobsImported:  legacyJobsImported,
+		ProjectsSynced:           projectsSynced,
+		PagesSynced:              pagesSynced,
+		ProjectsReadFromDatabase: projectsReadFromDatabase,
+		ProjectsStale:            projectsStale,
+		CacheNotice:              cacheNotice,
+		TotalRows:                totalRows,
+		ReturnedRows:             len(rows),
+		Rows:                     rows,
+	}
+	if projectComputeAvailable {
+		report.ProjectComputeMinutes = &selectedProjectCompute
 	}
 	return writeUsageReport(output, summaryOutput, opts.output, report)
 }
@@ -406,14 +543,18 @@ func (c *client) groupProjects(ctx context.Context, group string) ([]groupProjec
 	return paginate[groupProject](c, ctx, path)
 }
 
-func (c *client) groupCIMinutesQuota(ctx context.Context, group string, month time.Time) (*ciMinutesQuota, error) {
+func (c *client) groupQuotaSettings(ctx context.Context, group string) (groupQuotaSettings, error) {
 	var settings groupQuotaSettings
 	if err := c.get(ctx, fmt.Sprintf("/api/v4/groups/%s", url.PathEscape(group)), &settings); err != nil {
-		return nil, err
+		return groupQuotaSettings{}, err
 	}
 	if settings.ID == 0 {
-		return nil, errors.New("GitLab group response did not include a numeric ID")
+		return groupQuotaSettings{}, errors.New("GitLab group response did not include a numeric ID")
 	}
+	return settings, nil
+}
+
+func (c *client) groupCIMinutesQuota(ctx context.Context, groupID int64, month time.Time) (*ciMinutesQuota, error) {
 	query := `query($namespaceId: NamespaceID!, $date: Date!) {
   ciMinutesUsage(namespaceId: $namespaceId, date: $date, first: 1) {
     nodes { minutes month monthIso8601 }
@@ -422,7 +563,7 @@ func (c *client) groupCIMinutesQuota(ctx context.Context, group string, month ti
 	request := map[string]any{
 		"query": query,
 		"variables": map[string]string{
-			"namespaceId": fmt.Sprintf("gid://gitlab/Group/%d", settings.ID),
+			"namespaceId": fmt.Sprintf("gid://gitlab/Group/%d", groupID),
 			"date":        time.Date(month.Year(), month.Month(), 1, 0, 0, 0, 0, time.UTC).Format("2006-01-02"),
 		},
 	}
@@ -455,6 +596,17 @@ func (c *client) groupCIMinutesQuota(ctx context.Context, group string, month ti
 		Month:       monthName,
 		UsedMinutes: node.Minutes,
 	}
+	return quota, nil
+}
+
+func (c *client) groupQuotaForSettings(ctx context.Context, settings groupQuotaSettings, month time.Time) (*ciMinutesQuota, error) {
+	quota, err := c.groupCIMinutesQuota(ctx, settings.ID, month)
+	if err != nil {
+		return nil, err
+	}
+	if quota.UsedMinutes == nil {
+		return quota, nil
+	}
 	if settings.SharedRunnersMinutesLimit == nil {
 		quota.Reason = "GitLab returned usage but no group monthly minute limit"
 		return quota, nil
@@ -463,7 +615,7 @@ func (c *client) groupCIMinutesQuota(ctx context.Context, group string, month ti
 	if settings.ExtraSharedRunnersMinutesLimit != nil {
 		total += *settings.ExtraSharedRunnersMinutesLimit
 	}
-	remaining := total - *node.Minutes
+	remaining := total - *quota.UsedMinutes
 	quota.TotalMinutes = &total
 	quota.RemainingMinutes = &remaining
 	return quota, nil
@@ -504,7 +656,7 @@ func selectUsageProjects(projects []groupProject, filters []string, includeArchi
 	return selected, nil
 }
 
-func (c *client) groupJobUsage(ctx context.Context, projects []groupProject, since, until time.Time, opts usageOptions, cacheDir string, cacheEnabled bool) <-chan projectUsageResult {
+func groupJobUsage(ctx context.Context, c *client, store *usageStore, projects []groupProject, since, until time.Time, opts usageOptions) <-chan projectUsageResult {
 	results := make(chan projectUsageResult, len(projects))
 	if len(projects) == 0 {
 		close(results)
@@ -518,14 +670,16 @@ func (c *client) groupJobUsage(ctx context.Context, projects []groupProject, sin
 		go func() {
 			defer workers.Done()
 			for project := range projectQueue {
-				jobs, cachePagesRead, cachePagesStale, cacheNotice, err := c.projectUsageJobs(ctx, project.ID, since, until, opts, cacheDir, cacheEnabled)
+				syncStats, err := store.syncProject(ctx, c, project, since, until, opts)
+				var jobs []usageJob
+				if err == nil {
+					jobs, err = store.queryUsageJobs(ctx, project, since, until)
+				}
 				results <- projectUsageResult{
-					project:         project,
-					jobs:            jobs,
-					cachePagesRead:  cachePagesRead,
-					cachePagesStale: cachePagesStale,
-					cacheNotice:     cacheNotice,
-					err:             err,
+					project: project,
+					jobs:    jobs,
+					sync:    syncStats,
+					err:     err,
 				}
 			}
 		}()
@@ -548,57 +702,15 @@ func (c *client) groupJobUsage(ctx context.Context, projects []groupProject, sin
 	return results
 }
 
-func (c *client) projectUsageJobs(ctx context.Context, projectID int64, since, until time.Time, opts usageOptions, cacheDir string, cacheEnabled bool) ([]usageJob, int, int, string, error) {
-	var matching []usageJob
-	cachePagesRead := 0
-	cachePagesStale := 0
-	cacheNotice := ""
-	requestPath := fmt.Sprintf("/api/v4/projects/%d/jobs?pagination=keyset&per_page=%d&order_by=id&sort=desc", projectID, usagePageSize)
-	for requestPath != "" {
-		page, nextPath, cacheHit, cacheStale, notice, err := c.usageJobPage(ctx, projectID, requestPath, opts, cacheDir, cacheEnabled)
-		if cacheHit {
-			cachePagesRead++
-		}
-		if cacheStale {
-			cachePagesStale++
-		}
-		cacheNotice = joinUsageNotices(cacheNotice, notice)
-		if err != nil {
-			return nil, cachePagesRead, cachePagesStale, cacheNotice, err
-		}
-		if len(page) == 0 {
-			return matching, cachePagesRead, cachePagesStale, cacheNotice, nil
-		}
-		oldest := time.Time{}
-		for _, j := range page {
-			createdAt, err := time.Parse(time.RFC3339Nano, j.CreatedAt)
-			if err != nil {
-				continue
-			}
-			if oldest.IsZero() || createdAt.Before(oldest) {
-				oldest = createdAt
-			}
-			if !createdAt.Before(since) && !createdAt.After(until) {
-				matching = append(matching, j)
-			}
-		}
-		if !oldest.IsZero() && oldest.Before(since) {
-			return matching, cachePagesRead, cachePagesStale, cacheNotice, nil
-		}
-		requestPath = nextPath
-	}
-	return matching, cachePagesRead, cachePagesStale, cacheNotice, nil
-}
-
 func sortUsageRows(rows []usageRow, sortBy, order string) {
 	sort.SliceStable(rows, func(i, j int) bool {
 		left, right := rows[i], rows[j]
 		comparison := 0
 		switch sortBy {
 		case "minutes":
-			if left.Minutes < right.Minutes {
+			if left.DurationMinutes < right.DurationMinutes {
 				comparison = -1
-			} else if left.Minutes > right.Minutes {
+			} else if left.DurationMinutes > right.DurationMinutes {
 				comparison = 1
 			}
 		case "runs":
@@ -643,7 +755,7 @@ func writeUsageReport(output, summaryOutput io.Writer, format string, report usa
 			}
 		}
 		writer := csv.NewWriter(output)
-		if err := writer.Write([]string{"project", "job", "runs", "minutes", "mean_minutes", "median_minutes", "p95_minutes", "max_minutes", "last_run"}); err != nil {
+		if err := writer.Write([]string{"project", "job", "runs", "duration_minutes", "mean_duration_minutes", "median_duration_minutes", "p95_duration_minutes", "max_duration_minutes", "known_run_estimated_compute_minutes", "estimated_compute_runs", "unestimated_compute_runs", "last_run"}); err != nil {
 			return err
 		}
 		for _, row := range report.Rows {
@@ -651,11 +763,14 @@ func writeUsageReport(output, summaryOutput io.Writer, format string, report usa
 				row.Project,
 				row.Job,
 				strconv.Itoa(row.Runs),
-				fmt.Sprintf("%.1f", row.Minutes),
-				fmt.Sprintf("%.2f", row.MeanMinutes),
-				fmt.Sprintf("%.2f", row.MedianMinutes),
-				fmt.Sprintf("%.2f", row.P95Minutes),
-				fmt.Sprintf("%.2f", row.MaxMinutes),
+				fmt.Sprintf("%.1f", row.DurationMinutes),
+				fmt.Sprintf("%.2f", row.MeanDurationMinutes),
+				fmt.Sprintf("%.2f", row.MedianDurationMinutes),
+				fmt.Sprintf("%.2f", row.P95DurationMinutes),
+				fmt.Sprintf("%.2f", row.MaxDurationMinutes),
+				formatOptionalFloat(row.EstimatedComputeMinutes),
+				strconv.Itoa(row.EstimatedComputeRuns),
+				strconv.Itoa(row.UnestimatedComputeRuns),
 				row.LastRun.Format(time.RFC3339),
 			}); err != nil {
 				return err
@@ -673,14 +788,21 @@ func writeUsageReport(output, summaryOutput io.Writer, format string, report usa
 				return err
 			}
 		}
+		if err := writeUsageComputeSummary(writer, report); err != nil {
+			return err
+		}
 		if err := writeUsageCacheSummary(writer, report); err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintln(writer, "PROJECT\tJOB\tRUNS\tMINUTES\tMEAN (MIN)\tMEDIAN (MIN)\tP95 (MIN)\tMAX (MIN)\tLAST RUN"); err != nil {
+		if _, err := fmt.Fprintln(writer, "PROJECT\tJOB\tRUNS\tDURATION (MIN)\tMEAN DURATION\tMEDIAN DURATION\tP95 DURATION\tMAX DURATION\tKNOWN-RUN EST. COMPUTE (MIN)\tEST. RUNS\tUNEST. RUNS\tLAST RUN"); err != nil {
 			return err
 		}
 		for _, row := range report.Rows {
-			if _, err := fmt.Fprintf(writer, "%s\t%s\t%d\t%.1f\t%.2f\t%.2f\t%.2f\t%.2f\t%s\n", row.Project, row.Job, row.Runs, row.Minutes, row.MeanMinutes, row.MedianMinutes, row.P95Minutes, row.MaxMinutes, row.LastRun.Format(time.RFC3339)); err != nil {
+			estimated := "-"
+			if row.EstimatedComputeMinutes != nil {
+				estimated = fmt.Sprintf("%.2f", *row.EstimatedComputeMinutes)
+			}
+			if _, err := fmt.Fprintf(writer, "%s\t%s\t%d\t%.1f\t%.2f\t%.2f\t%.2f\t%.2f\t%s\t%d\t%d\t%s\n", row.Project, row.Job, row.Runs, row.DurationMinutes, row.MeanDurationMinutes, row.MedianDurationMinutes, row.P95DurationMinutes, row.MaxDurationMinutes, estimated, row.EstimatedComputeRuns, row.UnestimatedComputeRuns, row.LastRun.Format(time.RFC3339)); err != nil {
 				return err
 			}
 		}
@@ -692,18 +814,63 @@ func writeUsageSummary(output io.Writer, report usageReport) error {
 	if _, err := fmt.Fprintf(output, "Job durations for %s: %.1f minutes\n", report.Group, report.JobDurationMinutes); err != nil {
 		return err
 	}
-	if report.CIMinutesQuota == nil {
-		return writeUsageCacheSummary(output, report)
+	if report.CIMinutesQuota != nil {
+		if _, err := fmt.Fprintln(output, formatCIMinutesQuota(*report.CIMinutesQuota)); err != nil {
+			return err
+		}
 	}
-	if _, err := fmt.Fprintln(output, formatCIMinutesQuota(*report.CIMinutesQuota)); err != nil {
+	if err := writeUsageComputeSummary(output, report); err != nil {
 		return err
 	}
 	return writeUsageCacheSummary(output, report)
 }
 
+func writeUsageComputeSummary(output io.Writer, report usageReport) error {
+	if report.ProjectComputeAvailable {
+		if report.ProjectComputeMinutes == nil {
+			return errors.New("project compute usage is marked available without a total")
+		}
+		if _, err := fmt.Fprintf(output, "GitLab-reported compute minutes (%s, selected projects): %d; these totals are monthly and are not split by job\n", report.ProjectComputePeriod, *report.ProjectComputeMinutes); err != nil {
+			return err
+		}
+		for _, project := range report.ProjectComputeByProject {
+			if _, err := fmt.Fprintf(output, "  %s: %d compute minutes\n", project.Project, project.Minutes); err != nil {
+				return err
+			}
+		}
+	} else if report.ProjectComputeNotice != "" {
+		if _, err := fmt.Fprintf(output, "GitLab-reported project compute minutes unavailable: %s\n", report.ProjectComputeNotice); err != nil {
+			return err
+		}
+	}
+	if report.EstimatedComputeRuns > 0 || report.UnestimatedComputeRuns > 0 {
+		if _, err := fmt.Fprintf(output, "Known-run estimated compute minutes: %.2f across %d estimated runs; %d runs could not be estimated\n", report.EstimatedComputeMinutes, report.EstimatedComputeRuns, report.UnestimatedComputeRuns); err != nil {
+			return err
+		}
+		if report.ComputeEstimateNotice != "" {
+			if _, err := fmt.Fprintf(output, "  Estimate caveat: %s\n", report.ComputeEstimateNotice); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func formatOptionalFloat(value *float64) string {
+	if value == nil {
+		return ""
+	}
+	return fmt.Sprintf("%.2f", *value)
+}
+
 func writeUsageCacheSummary(output io.Writer, report usageReport) error {
-	if report.CachePagesRead > 0 {
-		if _, err := fmt.Fprintf(output, "Cache: reused %d job pages (%d stale)\n", report.CachePagesRead, report.CachePagesStale); err != nil {
+	if report.ProjectsReadFromDatabase > 0 || report.ProjectsSynced > 0 || report.LegacyCachePagesImported > 0 {
+		if _, err := fmt.Fprintf(output, "SQLite: %d projects read, %d synced across %d pages; imported %d legacy cache pages (%d jobs)\n", report.ProjectsReadFromDatabase, report.ProjectsSynced, report.PagesSynced, report.LegacyCachePagesImported, report.LegacyCacheJobsImported); err != nil {
+			return err
+		}
+	}
+	if report.ProjectsStale > 0 {
+		if _, err := fmt.Fprintf(output, "SQLite: used stored data for %d project(s) after refresh errors\n", report.ProjectsStale); err != nil {
 			return err
 		}
 	}
